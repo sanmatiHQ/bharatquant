@@ -22,6 +22,7 @@ data/trading.db
 data/trading.db-*
 backups/
 logs/*.log
+logs/*.pid
 !logs/.gitkeep
 
 # IDE
