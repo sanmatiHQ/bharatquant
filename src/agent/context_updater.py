@@ -11,8 +11,9 @@ logger = logging.getLogger("bharatquant.context")
 
 
 class ContextUpdater:
-    def __init__(self, ctx: MarketContext) -> None:
+    def __init__(self, ctx: MarketContext, db=None) -> None:
         self.ctx = ctx
+        self.db = db
 
     async def on_event(self, event: MarketEvent) -> None:
         p = event.payload or {}
@@ -44,6 +45,11 @@ class ContextUpdater:
             sym = event.symbol.replace("NSE:", "")
             if sym not in self.ctx.session_vwap and event.price > 0:
                 self.ctx.session_vwap[sym] = event.price
+
+        if self.db is not None:
+            from ..ops.agent_state import persist_context
+
+            persist_context(self.db, self.ctx)
 
     def subscribe(self, bus) -> None:
         types = (

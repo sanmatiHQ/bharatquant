@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # BharatQuant — event-driven engine + FastAPI dashboard (no cron, no Flask stubs)
 set -euo pipefail
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$ROOT"
 export PYTHONUNBUFFERED=1
+
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
+mkdir -p "${LOGS_DIR:-logs}" data
 
 python3.11 -m src.engine.main &
 ENGINE_PID=$!

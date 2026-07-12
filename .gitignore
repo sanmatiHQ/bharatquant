@@ -1,6 +1,7 @@
 # Secrets — never commit
 .env
 .kite_token.json
+.kite_token.json.*
 *.pem
 credentials.json
 

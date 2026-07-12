@@ -1,0 +1,10 @@
+[Unit]
+Description=BharatQuant nightly PPO training
+After=network.target
+
+[Service]
+Type=oneshot
+User=bharatquant
+WorkingDirectory=/opt/bharatquant/zerodha-momo-rl
+EnvironmentFile=/etc/bharatquant/env
+ExecStart=/usr/bin/python3.11 -m src.rl.rl_trainer --version ppo_v1 --epochs 4 --sync-gcs --restore-gcs

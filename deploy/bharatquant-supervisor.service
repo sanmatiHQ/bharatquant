@@ -1,0 +1,15 @@
+[Unit]
+Description=BharatQuant market supervisor — arms engine on GIFT/NSE activity
+After=network.target
+
+[Service]
+Type=simple
+User=bharatquant
+WorkingDirectory=/opt/bharatquant/zerodha-momo-rl
+EnvironmentFile=/etc/bharatquant/env
+ExecStart=/usr/bin/python3.11 -m src.ops.market_supervisor
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

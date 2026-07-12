@@ -1,6 +1,6 @@
 [Unit]
 Description=BharatQuant event-driven engine
-After=network.target
+After=network.target bharatquant-supervisor.service
 
 [Service]
 Type=simple

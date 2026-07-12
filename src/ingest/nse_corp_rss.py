@@ -52,7 +52,13 @@ async def poll_corp_rss(publish: Callable, interval_sec: float = 600.0, db=None)
                 )
             if db is not None:
                 with db.tx() as conn:
-                    record_ingest(conn, "nse.corp", EventType.NEWS_ALERT, {"seen": len(seen)}, False)
+                    record_ingest(
+                        conn,
+                        source="nse.corp",
+                        event_type=EventType.NEWS_ALERT,
+                        payload={"seen": len(seen)},
+                        execution_allowed=False,
+                    )
         except Exception:
             logger.exception("corp_rss_poll_error")
         await asyncio.sleep(interval_sec)

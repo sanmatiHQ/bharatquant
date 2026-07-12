@@ -13,8 +13,11 @@ def check_token() -> bool:
     try:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return bool(data.get('access_token'))
-    except FileNotFoundError:
+        token = data.get('access_token')
+        if not token and isinstance(data.get('data'), dict):
+            token = data['data'].get('access_token')
+        return bool(token)
+    except (FileNotFoundError, json.JSONDecodeError):
         return False
 
 

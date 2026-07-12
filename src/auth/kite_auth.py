@@ -32,6 +32,13 @@ class KiteConfig:
 
 LOGGER = get_logger("kite_auth", logs_dir=os.getenv("LOGS_DIR", "logs"))
 
+# Browser login lives on kite.zerodha.com — api.kite.trade is REST-only (JSON errors in browser).
+KITE_LOGIN_BASE = "https://kite.zerodha.com/connect/login"
+
+
+def build_login_url(api_key: str) -> str:
+    return f"{KITE_LOGIN_BASE}?v=3&api_key={api_key}"
+
 
 class CallbackHandler(http.server.BaseHTTPRequestHandler):
     request_token: Optional[str] = None
@@ -81,8 +88,10 @@ def run_callback_server(redirect_url: str) -> tuple[str, threading.Thread, int]:
 
 def login_and_exchange(cfg: KiteConfig) -> None:
     redirect, thread, port = run_callback_server(cfg.redirect_url)
-    login_url = f"https://api.kite.trade/connect/login?api_key={cfg.api_key}&v=3"
+    login_url = build_login_url(cfg.api_key)
     LOGGER.info("opening_login", extra={"url": login_url, "redirect": redirect})
+    print(f"Open this URL if the browser did not launch:\n{login_url}\n")
+    print(f"Waiting for callback at {redirect} (up to 5 min)...")
     webbrowser.open(login_url)
 
     # Poll for token

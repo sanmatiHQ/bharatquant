@@ -1,0 +1,10 @@
+[Unit]
+Description=Run BharatQuant PPO training after market close (IST)
+
+[Timer]
+OnCalendar=Mon-Fri 16:15:00
+Timezone=Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -22,6 +22,8 @@ from ..data.data_policy import DataIntegrityError, require_positive_price
 from ..strategies.registry import StrategyRegistry
 from ..ops.kill_switch import is_halted, set_halt
 from ..ops.daily_pnl import portfolio_state
+from ..ops.agent_state import persist_decision
+from ..rl.rl_observer import RLObserver
 from ..exec.order_fill_handler import paper_fill_event
 
 logger = logging.getLogger("bharatquant.execution")
@@ -38,6 +40,7 @@ class ExecutionEngine:
         self.live: Optional[LiveBroker] = broker_from_env()
         self.max_trade = float(os.getenv("MAX_RUPEES_PER_TRADE", "1000"))
         self.max_loss_inr = float(os.getenv("MAX_DAILY_LOSS_RUPEES", "2000"))
+        self._rl = RLObserver(db)
 
     def _portfolio(self) -> dict:
         st = portfolio_state(self.db)
@@ -121,12 +124,26 @@ class ExecutionEngine:
             for s in signals:
                 self._record_signal(s, event, False)
                 self.router.maybe_shadow(s, event.price, False)
+            persist_decision(self.db, {
+                "action": "PASS",
+                "reason": "no_fused_signal",
+                "candidates": len(signals),
+                "event": str(event.type),
+            })
             return
         ok, reason = self.router.risk_veto(chosen, port)
+        self._rl.snapshot_before(self.router.ctx, chosen, score=chosen.confidence)
         if not ok and chosen.action == "BUY":
             logger.info("risk_veto", extra={"reason": reason, "symbol": chosen.symbol})
             self._record_signal(chosen, event, False)
             self.router.maybe_shadow(chosen, event.price, False)
+            persist_decision(self.db, {
+                "action": "VETO",
+                "strategy": chosen.strategy_id,
+                "symbol": chosen.symbol,
+                "signal": chosen.action,
+                "reason": reason,
+            })
             return
         if chosen.action == "BUY" and not is_allocated_symbol(self.db, chosen.symbol):
             if chosen.strategy_id not in ("insider_cluster", "bulk_accumulation", "pairs_stat_arb"):
@@ -213,6 +230,20 @@ class ExecutionEngine:
         else:
             executed = False
         self._record_signal(chosen, event, executed)
+        self._rl.record_outcome(
+            self.router.ctx,
+            chosen,
+            executed=executed,
+            daily_return=float(port.get("day_loss_rupees", 0)) / max(1.0, port.get("total_equity", 1)),
+        )
+        persist_decision(self.db, {
+            "action": chosen.action if executed else f"{chosen.action}_skipped",
+            "strategy": chosen.strategy_id,
+            "symbol": chosen.symbol,
+            "confidence": chosen.confidence,
+            "executed": executed,
+            "regime": self.router.ctx.regime,
+        })
         if chosen.action in ("BUY", "SELL"):
             await publish_strategy_alert(
                 chosen.strategy_id,

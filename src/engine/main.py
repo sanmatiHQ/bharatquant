@@ -127,8 +127,15 @@ def _start_kite_feed(
     store.ensure_cache(universe_csv=universe_csv)
     watch = load_watchlist_symbols(db)
     if not watch:
-        logger.warning("kite_feed_empty_watchlist", extra={"hint": "run screener on SESSION_PRE_OPEN"})
-        return None
+        # First boot before SESSION_PRE_OPEN screen — liquid NSE names for WS subscription
+        watch = [
+            "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "BHARTIARTL",
+            "ITC", "KOTAKBANK", "LT", "AXISBANK", "MARUTI", "BAJFINANCE", "HINDUNILVR",
+            "ASIANPAINT", "TITAN", "SUNPHARMA", "WIPRO", "ULTRACEMCO", "NESTLEIND",
+        ]
+        cap = int(os.getenv("WS_WATCHLIST_SIZE", "200"))
+        watch = watch[:cap]
+        logger.info("kite_feed_bootstrap_watchlist", extra={"count": len(watch)})
 
     token_map: dict[int, str] = {}
     for sym in watch:
@@ -165,10 +172,13 @@ async def main() -> None:
     enabled = _load_enabled_strategies()
     registry = StrategyRegistry(enabled=enabled)
     router = AgentRouter(db=db)
-    context_updater = ContextUpdater(router.ctx)
+    context_updater = ContextUpdater(router.ctx, db=db)
     seed_calendar_year(db)
     sector_csv = os.getenv("SECTOR_MAP_CSV", "data/sector_map.csv")
     load_sector_map(db, sector_csv)
+    from ..ops.agent_state import persist_context, touch_heartbeat
+
+    persist_context(db, router.ctx)
     bandit = StrategyBandit(db)
     execution = ExecutionEngine(db, registry, router, bus_publish=bus.publish)
     pos_mon = PositionMonitor(db, bus.publish)
@@ -199,6 +209,23 @@ async def main() -> None:
             snapshot_portfolio_close(db)
             persist_daily_summary(db)
             backup_sqlite(os.getenv("SQLITE_PATH", "data/trading.db"))
+            if os.getenv("RL_TRAIN_ON_CLOSE", "true").lower() in ("1", "true", "yes"):
+                from ..rl.ppo_trainer import train_ppo
+                from ..ops.gcs_store import sync_rl_model
+
+                result = await asyncio.to_thread(
+                    train_ppo,
+                    db,
+                    os.getenv("RL_MODEL_DIR", "models/rl"),
+                    os.getenv("RL_ACTIVE_VERSION", "ppo_v1"),
+                )
+                logger.info("rl_train_on_close", extra=result)
+                if result.get("status") == "ok":
+                    await asyncio.to_thread(
+                        sync_rl_model,
+                        os.getenv("RL_MODEL_DIR", "models/rl"),
+                        os.getenv("RL_ACTIVE_VERSION", "ppo_v1"),
+                    )
         except Exception:
             logger.exception("session_close_ops_failed")
 
@@ -290,6 +317,17 @@ async def main() -> None:
     bandit_task = asyncio.create_task(refresh_bandit())
     recorder_task = asyncio.create_task(recorder_flush_loop())
     watchdog_task = asyncio.create_task(watchdog.run_loop())
+
+    async def heartbeat_loop() -> None:
+        while True:
+            try:
+                touch_heartbeat(db)
+                persist_context(db, router.ctx)
+            except Exception:
+                logger.exception("heartbeat_error")
+            await asyncio.sleep(30)
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
     logger.info(
         "engine_started",
         extra={
@@ -307,6 +345,7 @@ async def main() -> None:
         bandit_task.cancel()
         recorder_task.cancel()
         watchdog_task.cancel()
+        heartbeat_task.cancel()
         recorder.flush()
         if kite_feed:
             kite_feed.stop()

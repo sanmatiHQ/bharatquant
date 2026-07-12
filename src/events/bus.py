@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections import defaultdict
 from typing import Awaitable, Callable, DefaultDict, List
@@ -40,7 +41,9 @@ class EventBus:
             handlers = list(self._handlers.get(event.type, []))
             for handler in handlers:
                 try:
-                    await handler(event)
+                    result = handler(event)
+                    if inspect.isawaitable(result):
+                        await result
                 except Exception:
                     self._logger.exception(
                         "handler_error",

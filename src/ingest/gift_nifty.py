@@ -58,7 +58,13 @@ async def poll_gift_proxy(publish: Callable, interval_sec: float = 60.0, db=None
                 )
                 if db is not None:
                     with db.tx() as conn:
-                        record_ingest(conn, SIGNAL_ONLY_SOURCE, EventType.GIFT_TICK, payload, False)
+                        record_ingest(
+                            conn,
+                            source=SIGNAL_ONLY_SOURCE,
+                            event_type=EventType.GIFT_TICK,
+                            payload=payload,
+                            execution_allowed=False,
+                        )
         except Exception:
             logger.exception("gift_poll_error_no_fake_publish")
         await asyncio.sleep(interval_sec)

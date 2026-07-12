@@ -59,7 +59,13 @@ async def poll_delivery(publish: Callable, interval_sec: float = 3600.0, db=None
             last_date = time.strftime("%Y-%m-%d")
             if db is not None:
                 with db.tx() as conn:
-                    record_ingest(conn, "nse.delivery", EventType.VOLUME_ANOMALY, {"count": len(rows)}, False)
+                    record_ingest(
+                        conn,
+                        source="nse.delivery",
+                        event_type=EventType.VOLUME_ANOMALY,
+                        payload={"count": len(rows)},
+                        execution_allowed=False,
+                    )
         except Exception:
             logger.exception("delivery_poll_error")
         await asyncio.sleep(interval_sec)

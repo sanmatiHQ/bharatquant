@@ -15,3 +15,4 @@ httpx==0.28.1
 pytest==8.3.4
 pytest-asyncio==0.24.0
 yfinance==0.2.51
+google-cloud-storage==2.19.0

@@ -4,9 +4,10 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
+
+from .gcs_store import upload_file
 
 logger = logging.getLogger("bharatquant.backup")
 
@@ -23,18 +24,7 @@ def backup_sqlite(sqlite_path: str, *, bucket: str | None = None) -> bool:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     dest = src.parent / f"trading_{stamp}.db"
     shutil.copy2(src, dest)
-    uri = f"gs://{bucket.rstrip('/')}/backups/trading_{stamp}.db"
-    try:
-        subprocess.run(
-            ["gcloud", "storage", "cp", str(dest), uri],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        dest.unlink(missing_ok=True)
-        logger.info("backup_ok", extra={"uri": uri})
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        logger.warning("backup_failed", extra={"error": str(exc), "local": str(dest)})
-        return False
+    key = f"backups/trading_{stamp}.db"
+    ok = upload_file(dest, key, bucket=bucket)
+    dest.unlink(missing_ok=True)
+    return ok

@@ -19,11 +19,15 @@ class DB:
     def __init__(self, cfg: DBConfig) -> None:
         self.path = Path(cfg.sqlite_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path)
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._bootstrap()
 
     def _bootstrap(self) -> None:
+        # Legacy DBs from pre-migration schema — add columns before CREATE INDEX in migrations.sql
+        if self.path.exists() and self.path.stat().st_size > 0:
+            self._apply_patches()
+
         migrations_path = Path(__file__).with_name("migrations.sql")
         with open(migrations_path, "r", encoding="utf-8") as f:
             sql = f.read()
