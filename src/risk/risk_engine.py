@@ -1,7 +1,10 @@
 """
-Risk engine enforcing stop-loss, daily loss gate, and max positions.
+Risk engine enforcing stop-loss, take-profit, trailing stop, and max positions.
 """
 from __future__ import annotations
+
+import os
+import time
 from dataclasses import dataclass
 from typing import Tuple
 
@@ -12,6 +15,21 @@ class RiskConfig:
     max_daily_loss_percent: float
     max_daily_loss_rupees: float
     max_positions: int
+    take_profit_percent: float = 2.0
+    trailing_stop_percent: float = 1.5
+    max_hold_minutes: int = 240
+
+
+def risk_config_from_env() -> RiskConfig:
+    return RiskConfig(
+        stop_loss_percent=float(os.getenv("STOP_LOSS_PCT", "4")),
+        max_daily_loss_percent=float(os.getenv("MAX_DAILY_LOSS_PCT", "2")),
+        max_daily_loss_rupees=float(os.getenv("MAX_DAILY_LOSS_RUPEES", "2000")),
+        max_positions=int(os.getenv("MAX_POSITIONS", "8")),
+        take_profit_percent=float(os.getenv("TAKE_PROFIT_PCT", "2.0")),
+        trailing_stop_percent=float(os.getenv("TRAILING_STOP_PCT", "1.5")),
+        max_hold_minutes=int(os.getenv("MAX_HOLD_MINUTES", "240")),
+    )
 
 
 class RiskEngine:
@@ -19,9 +37,7 @@ class RiskEngine:
         self.cfg = cfg
 
     def can_open_new(self, state: dict) -> tuple[bool, str]:
-        """Check portfolio state for new positions gate.
-        state expects keys: total_equity, day_peak_equity, day_loss_rupees, open_positions
-        """
+        """Check portfolio state for new positions gate."""
         if state.get("halted"):
             return False, "kill_switch"
         total_eq = float(state.get("total_equity", 0))
@@ -36,11 +52,31 @@ class RiskEngine:
             return False, "max_positions"
         return True, "ok"
 
-    def should_exit(self, symbol_state: dict) -> bool:
-        """Signal exit if price has moved below stop-loss threshold from avg price."""
+    def should_exit(self, symbol_state: dict, peak_price: float = 0.0) -> Tuple[bool, str]:
+        """Exit on stop-loss, take-profit, trailing stop, or max hold time."""
         avg = float(symbol_state.get("avg_price", 0))
         last = float(symbol_state.get("last_price", 0))
-        if avg <= 0:
-            return False
+        if avg <= 0 or last <= 0:
+            return False, ""
+
+        gain = (last - avg) / avg * 100.0
         drop = (avg - last) / avg * 100.0
-        return drop >= self.cfg.stop_loss_percent
+        if drop >= self.cfg.stop_loss_percent:
+            return True, f"stop_loss_{drop:.2f}pct"
+
+        if gain >= self.cfg.take_profit_percent:
+            return True, f"take_profit_{gain:.2f}pct"
+
+        peak = max(peak_price, float(symbol_state.get("peak_price", last)))
+        if peak > avg and peak > 0:
+            trail_drop = (peak - last) / peak * 100.0
+            if gain > 0.5 and trail_drop >= self.cfg.trailing_stop_percent:
+                return True, f"trailing_stop_{trail_drop:.2f}pct"
+
+        open_ts = int(symbol_state.get("open_ts", 0))
+        if open_ts > 0 and self.cfg.max_hold_minutes > 0:
+            held_min = (time.time() - open_ts) / 60.0
+            if held_min >= self.cfg.max_hold_minutes:
+                return True, f"max_hold_{int(held_min)}min"
+
+        return False, ""

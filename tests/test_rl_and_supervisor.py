@@ -59,14 +59,16 @@ def test_train_ppo_with_transitions(db):
 
 def test_evaluate_market_preopen(db):
     with patch("src.ops.market_supervisor._is_weekday", return_value=True):
-        run, reason = evaluate_market_activity(db, "Pre-Open")
+        with patch.dict(os.environ, {"PAPER_ALWAYS_ON": "false", "TRADING_MODE": "paper"}):
+            run, reason = evaluate_market_activity(db, "Pre-Open")
     assert run is True
     assert "pre" in reason
 
 
 def test_evaluate_market_weekend(db):
     with patch("src.ops.market_supervisor._is_weekday", return_value=False):
-        run, reason = evaluate_market_activity(db, "Close")
+        with patch.dict(os.environ, {"PAPER_ALWAYS_ON": "false", "TRADING_MODE": "paper"}):
+            run, reason = evaluate_market_activity(db, "Close")
     assert run is False
 
 

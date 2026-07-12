@@ -41,3 +41,8 @@ def load_watchlist_symbols(db: DB, max_symbols: int | None = None) -> List[str]:
                     symbols.append(s)
 
     return symbols[:cap]
+
+
+def is_watchlist_symbol(db: DB, symbol: str) -> bool:
+    sym = symbol.replace("NSE:", "")
+    return sym in load_watchlist_symbols(db)

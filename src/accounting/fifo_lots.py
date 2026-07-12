@@ -1,6 +1,7 @@
 """FIFO lot accounting + STCG/LTCG classification on sells."""
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import List, Tuple
@@ -102,7 +103,7 @@ def close_lots_fifo(
 
 
 def load_positions_ctx(db: DB) -> dict:
-    cur = db._conn.execute("SELECT symbol, qty, avg_price, last_price, rail FROM positions")
+    cur = db._conn.execute("SELECT symbol, qty, avg_price, last_price, rail, open_ts FROM positions")
     out = {}
     for r in cur.fetchall():
         out[r["symbol"]] = {
@@ -110,6 +111,7 @@ def load_positions_ctx(db: DB) -> dict:
             "avg_price": float(r["avg_price"]),
             "last_price": float(r["last_price"]),
             "rail": r["rail"] or "CNC",
-            "stop_loss_pct": 4.0,
+            "open_ts": int(r["open_ts"] or 0),
+            "stop_loss_pct": float(os.getenv("STOP_LOSS_PCT", "4")),
         }
     return out

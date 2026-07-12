@@ -19,7 +19,7 @@ trading:
   max_daily_loss_rupees: 2000
   min_score: 0.65
   slippage_bps: 4
-  max_positions: 5
+  max_positions: 8
 
 filters:
   min_market_cap_cr: 2000
@@ -28,6 +28,9 @@ filters:
 risk:
   stop_loss_percent: 4.0
   max_daily_loss_percent: 2.0
+  take_profit_percent: 2.0
+  trailing_stop_percent: 1.5
+  max_hold_minutes: 240
 
 storage:
   sqlite_path: "data/trading.db"
@@ -53,7 +56,7 @@ strategies:
     - global_risk_beta
 
 rl:
-  active_version: "baseline"
+  active_version: "ppo_v1"
   model_dir: "models/rl"
   algorithm: "ppo"
   gamma: 0.99

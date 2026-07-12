@@ -71,6 +71,10 @@ def evaluate_market_activity(db: DB, nse_status: str) -> tuple[bool, str]:
     Return (should_run_engine, reason).
     Event-driven arming — not a fixed 9:20 cron.
     """
+    if os.getenv("PAPER_ALWAYS_ON", "true").lower() in ("1", "true", "yes"):
+        if os.getenv("TRADING_MODE", "paper") == "paper":
+            return True, "paper_always_on"
+
     now = _now_ist()
     hour = now.hour + now.minute / 60.0
 

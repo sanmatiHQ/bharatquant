@@ -9,17 +9,18 @@ from .base import MarketContext, Signal, Strategy
 
 class StopLossGuardStrategy:
     id = "stop_loss_guard"
-    listens_to = {EventType.TICK, EventType.STOP_BREACH}
+    listens_to = {EventType.TICK, EventType.STOP_BREACH, EventType.TAKE_PROFIT}
 
     async def on_event(self, event: MarketEvent, ctx: MarketContext) -> Optional[Signal]:
-        if event.type == EventType.STOP_BREACH:
+        if event.type in (EventType.STOP_BREACH, EventType.TAKE_PROFIT):
+            reason = event.payload.get("reason", "stop_breach")
             return Signal(
                 self.id,
                 event.symbol,
                 "SELL",
                 event.payload.get("rail", "CNC"),
                 1.0,
-                "stop_breach",
+                reason,
             )
         sym = event.symbol
         pos = ctx.positions.get(sym)

@@ -256,6 +256,11 @@ async def main() -> None:
 
     poller_tasks = await _start_pollers(bus, logger, db, watch_syms)
 
+    from ..portfolio.allocation import bootstrap_watchlist_allocation
+
+    bootstrap_watchlist_allocation(db, watch_syms)
+    logger.info("bootstrap_allocation_done", extra={"symbols": len(watch_syms)})
+
     async def on_pre_open(event: MarketEvent) -> None:
         """Screen full NSE universe before open — event-driven, not cron."""
         try:
@@ -278,6 +283,7 @@ async def main() -> None:
                     "preopen_allocation_done",
                     extra={"names": len(alloc), "symbols": alloc["symbol"].tolist() if not alloc.empty else []},
                 )
+                _restart_feed()
         except Exception:
             logger.exception("preopen_screen_failed")
 

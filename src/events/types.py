@@ -35,6 +35,7 @@ class EventType(enum.StrEnum):
 
     # Derived risk
     STOP_BREACH = "STOP_BREACH"
+    TAKE_PROFIT = "TAKE_PROFIT"
     VOLUME_ANOMALY = "VOLUME_ANOMALY"
     VWAP_CROSS = "VWAP_CROSS"
 

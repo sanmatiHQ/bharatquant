@@ -21,7 +21,7 @@ class CombinedMomentumStrategy:
         rsi = float(event.payload.get("rsi", 50))
         # Relative strength (vs zero) + absolute trend alignment
         rel = r3m - r1m
-        if r3m > 0.05 and rel > 0 and rsi < 70 and ctx.fii_net_cr > -2000:
-            conf = min(0.95, 0.5 + r3m)
-            return Signal(self.id, event.symbol, "BUY", "CNC", conf, "combined_mom_rel_abs")
+        if r3m > 0.02 and rel > 0 and rsi < 72 and ctx.fii_net_cr > -2000:
+            conf = min(0.95, 0.5 + r3m * 2)
+            return Signal(self.id, event.symbol, "BUY", "MIS", conf, "combined_mom_rel_abs")
         return None

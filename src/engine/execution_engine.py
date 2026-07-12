@@ -1,6 +1,7 @@
 """Event-driven execution handler — paper or live."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -18,6 +19,7 @@ from ..exec.margin_check import check_margin
 from ..exec.paper_broker import PaperBroker
 from ..strategies.base import Signal
 from ..portfolio.allocation import is_allocated_symbol, load_target_qty
+from ..data.watchlist import is_watchlist_symbol
 from ..data.data_policy import DataIntegrityError, require_positive_price
 from ..strategies.registry import StrategyRegistry
 from ..ops.kill_switch import is_halted, set_halt
@@ -97,15 +99,56 @@ class ExecutionEngine:
                 (strategy_id, pnl_delta, ts),
             )
 
-    def _qty_for(self, symbol: str, ltp: float) -> int:
+    def _qty_for(self, symbol: str, ltp: float, port: dict) -> int:
         if ltp <= 0:
             return 0
         sym = symbol.replace("NSE:", "")
+        cash = float(port.get("cash", 0))
+        open_pos = int(port.get("open_positions", 0))
+        max_pos = int(os.getenv("MAX_POSITIONS", "8"))
+        slots = max(1, max_pos - open_pos)
+        deployable = cash * 0.92 / slots
+        cap_rupees = min(self.max_trade, deployable)
         planned = load_target_qty(self.db, sym)
         if planned is not None and planned > 0:
-            cap = max(1, int(self.max_trade // ltp))
-            return min(planned, cap)
-        return max(1, int(self.max_trade // ltp))
+            cap_rupees = min(cap_rupees, planned * ltp)
+        return max(1, int(cap_rupees // ltp))
+
+    def _can_buy(self, chosen: Signal, sym: str) -> bool:
+        if chosen.strategy_id in ("insider_cluster", "bulk_accumulation", "pairs_stat_arb"):
+            return True
+        if chosen.rail.upper() == "MIS":
+            return True
+        if is_allocated_symbol(self.db, sym):
+            return True
+        if is_watchlist_symbol(self.db, sym):
+            return True
+        return False
+
+    async def _train_after_trade(self) -> None:
+        if os.getenv("RL_TRAIN_ON_TRADE", "true").lower() not in ("1", "true", "yes"):
+            return
+        try:
+            from ..rl.ppo_trainer import train_ppo
+            from ..ops.gcs_store import sync_rl_model
+
+            result = await asyncio.to_thread(
+                train_ppo,
+                self.db,
+                os.getenv("RL_MODEL_DIR", "models/rl"),
+                os.getenv("RL_ACTIVE_VERSION", "ppo_v1"),
+            )
+            if result.get("status") == "ok":
+                if self.router._rl_agent:
+                    self.router._rl_agent.reload()
+                await asyncio.to_thread(
+                    sync_rl_model,
+                    os.getenv("RL_MODEL_DIR", "models/rl"),
+                    os.getenv("RL_ACTIVE_VERSION", "ppo_v1"),
+                )
+            logger.info("rl_train_on_trade", extra=result)
+        except Exception:
+            logger.exception("rl_train_on_trade_failed")
 
     async def on_event(self, event: MarketEvent) -> None:
         if is_halted(self.db):
@@ -137,6 +180,7 @@ class ExecutionEngine:
             logger.info("risk_veto", extra={"reason": reason, "symbol": chosen.symbol})
             self._record_signal(chosen, event, False)
             self.router.maybe_shadow(chosen, event.price, False)
+            self._rl.record_skip(self.router.ctx, chosen, reason=reason)
             persist_decision(self.db, {
                 "action": "VETO",
                 "strategy": chosen.strategy_id,
@@ -145,13 +189,14 @@ class ExecutionEngine:
                 "reason": reason,
             })
             return
-        if chosen.action == "BUY" and not is_allocated_symbol(self.db, chosen.symbol):
-            if chosen.strategy_id not in ("insider_cluster", "bulk_accumulation", "pairs_stat_arb"):
-                logger.info("allocation_veto", extra={"symbol": chosen.symbol})
-                self._record_signal(chosen, event, False)
-                return
+        if chosen.action == "BUY" and not self._can_buy(chosen, chosen.symbol):
+            logger.info("allocation_veto", extra={"symbol": chosen.symbol})
+            self._record_signal(chosen, event, False)
+            self._rl.record_skip(self.router.ctx, chosen, reason="allocation_veto")
+            return
         if chosen.action == "BUY" and is_excluded(self.db, chosen.symbol):
             self._record_signal(chosen, event, False)
+            self._rl.record_skip(self.router.ctx, chosen, reason="asm_gsm")
             return
         if chosen.action == "HEDGE":
             self._record_signal(chosen, event, False)
@@ -162,9 +207,11 @@ class ExecutionEngine:
             logger.error("ltp_missing", extra={"symbol": chosen.symbol})
             self._record_signal(chosen, event, False)
             return
-        qty = self._qty_for(chosen.symbol, ltp)
+        qty = self._qty_for(chosen.symbol, ltp, port)
         ts = int(time.time())
         sym = chosen.symbol.replace("NSE:", "")
+        realized_pnl = 0.0
+        cost_basis = 0.0
         if chosen.action == "BUY":
             cash = float(port.get("cash", 0))
             ok_m, m_reason = check_margin(
@@ -178,6 +225,7 @@ class ExecutionEngine:
             if not ok_m:
                 logger.info("margin_veto", extra={"reason": m_reason})
                 self._record_signal(chosen, event, False)
+                self._rl.record_skip(self.router.ctx, chosen, reason=m_reason)
                 return
             if self.live and os.getenv("TRADING_MODE") == "live":
                 oid = self.live.place(chosen, ltp, qty)
@@ -216,17 +264,22 @@ class ExecutionEngine:
                 order_id = f"PAPER-S-{ts}"
             if executed:
                 fees = self.costs.compute_trade_costs(chosen.symbol, qty, exec_px, "SELL", order_id=order_id)
+                pos_row = self.db._conn.execute(
+                    "SELECT qty, avg_price FROM positions WHERE symbol=?", (sym,)
+                ).fetchone()
+                cost_basis = float(pos_row["avg_price"]) * qty if pos_row else exec_px * qty
                 fills, tax_class = close_lots_fifo(self.db, sym, qty, exec_px, ts, self.costs)
                 proceeds = exec_px * qty - fees
-                realized = sum(f.pnl for f in fills) - fees
+                realized_pnl = sum(f.pnl for f in fills) - fees
                 self.db.record_trade(
                     ts, sym, "SELL", qty, exec_px, proceeds, chosen.reason, fees, tax_class, order_id=order_id
                 )
                 self.db.add_cash(ts, proceeds, f"sell:{sym}")
-                self._update_strategy_pnl(chosen.strategy_id, realized)
-                self.router.record_return(realized / max(1.0, port.get("total_equity", 1)))
+                self._update_strategy_pnl(chosen.strategy_id, realized_pnl)
+                self.router.record_return(realized_pnl / max(1.0, port.get("total_equity", 1)))
                 if self._bus_publish and order_id:
                     await self._bus_publish(paper_fill_event(sym, "SELL", qty, exec_px, order_id))
+                await self._train_after_trade()
         else:
             executed = False
         self._record_signal(chosen, event, executed)
@@ -235,6 +288,8 @@ class ExecutionEngine:
             chosen,
             executed=executed,
             daily_return=float(port.get("day_loss_rupees", 0)) / max(1.0, port.get("total_equity", 1)),
+            realized_pnl=realized_pnl,
+            cost_basis=cost_basis,
         )
         persist_decision(self.db, {
             "action": chosen.action if executed else f"{chosen.action}_skipped",

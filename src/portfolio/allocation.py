@@ -198,3 +198,37 @@ def load_target_qty(db: DB, symbol: str) -> Optional[int]:
 
 def is_allocated_symbol(db: DB, symbol: str) -> bool:
     return load_target_qty(db, symbol) is not None
+
+
+def bootstrap_watchlist_allocation(db: DB, symbols: list[str]) -> int:
+    """Seed equal-weight targets so BUYs are not blocked before pre-open screen."""
+    row = db._conn.execute("SELECT MAX(run_ts) AS ts FROM portfolio_allocation").fetchone()
+    if row and row["ts"] and int(time.time()) - int(row["ts"]) < 3600:
+        return int(row["ts"])
+    if not symbols:
+        return 0
+    max_pos = int(os.getenv("MAX_POSITIONS", "8"))
+    max_trade = float(os.getenv("MAX_RUPEES_PER_TRADE", "1000"))
+    budget = _daily_budget()
+    picks = symbols[: max(max_pos * 2, 10)]
+    w = 1.0 / len(picks)
+    rows = []
+    for sym in picks:
+        px_row = db._conn.execute(
+            "SELECT last_close FROM screening_results WHERE symbol=? ORDER BY run_ts DESC LIMIT 1",
+            (sym.replace("NSE:", ""),),
+        ).fetchone()
+        px = float(px_row["last_close"]) if px_row and px_row["last_close"] else 500.0
+        qty = max(1, int(min(max_trade, budget * w) // px))
+        rows.append(
+            {
+                "symbol": sym.replace("NSE:", ""),
+                "weight": w,
+                "target_qty": qty,
+                "target_rupees": qty * px,
+                "last_price": px,
+            }
+        )
+    import pandas as pd
+
+    return persist_allocation(db, pd.DataFrame(rows))

@@ -1,12 +1,13 @@
-"""Position monitor — TICK → STOP_BREACH events (no cron)."""
+"""Position monitor — TICK → STOP_BREACH / TAKE_PROFIT events (no cron)."""
 from __future__ import annotations
 
 import logging
-from typing import Callable
+import os
+from typing import Callable, Dict
 
 from ..db.database import DB
 from ..events.types import EventType, MarketEvent
-from ..risk.risk_engine import RiskConfig, RiskEngine
+from ..risk.risk_engine import RiskEngine, risk_config_from_env
 
 logger = logging.getLogger("bharatquant.position_monitor")
 
@@ -15,21 +16,15 @@ class PositionMonitor:
     def __init__(self, db: DB, publish: Callable, risk: RiskEngine | None = None) -> None:
         self.db = db
         self.publish = publish
-        self.risk = risk or RiskEngine(
-            RiskConfig(
-                stop_loss_percent=4.0,
-                max_daily_loss_percent=2.0,
-                max_daily_loss_rupees=2000.0,
-                max_positions=5,
-            )
-        )
+        self.risk = risk or RiskEngine(risk_config_from_env())
+        self._peak_price: Dict[str, float] = {}
 
     async def on_tick(self, event: MarketEvent) -> None:
         sym = event.symbol
         if not sym or event.price <= 0:
             return
         cur = self.db._conn.execute(
-            "SELECT symbol, qty, avg_price, last_price FROM positions WHERE symbol=?",
+            "SELECT symbol, qty, avg_price, last_price, open_ts, rail FROM positions WHERE symbol=?",
             (sym,),
         )
         row = cur.fetchone()
@@ -40,19 +35,32 @@ class PositionMonitor:
             (event.price, sym),
         )
         self.db._conn.commit()
+
+        peak = self._peak_price.get(sym, float(row["last_price"]))
+        peak = max(peak, event.price)
+        self._peak_price[sym] = peak
+
         state = {
             "avg_price": float(row["avg_price"]),
             "last_price": event.price,
+            "open_ts": int(row["open_ts"]),
+            "peak_price": peak,
+            "rail": str(row["rail"] or "CNC"),
         }
-        if self.risk.should_exit(state):
-            await self.publish(
-                MarketEvent(
-                    type=EventType.STOP_BREACH,
-                    symbol=sym,
-                    price=event.price,
-                    payload={"avg_price": state["avg_price"]},
-                )
+        should_exit, reason = self.risk.should_exit(state, peak_price=peak)
+        if not should_exit:
+            return
+
+        ev_type = EventType.TAKE_PROFIT if reason.startswith(("take_profit", "trailing_stop", "max_hold")) else EventType.STOP_BREACH
+        await self.publish(
+            MarketEvent(
+                type=ev_type,
+                symbol=sym,
+                price=event.price,
+                payload={"avg_price": state["avg_price"], "rail": state["rail"], "reason": reason},
             )
+        )
+        logger.info("position_exit_signal", extra={"symbol": sym, "reason": reason, "event": str(ev_type)})
 
     async def on_session_close(self, event: MarketEvent) -> None:
         """Square off MIS positions on SESSION_CLOSE."""
@@ -63,10 +71,12 @@ class PositionMonitor:
             rail = str(row["rail"] or "CNC").upper()
             if rail != "MIS":
                 continue
+            sym = row["symbol"]
+            self._peak_price.pop(sym, None)
             await self.publish(
                 MarketEvent(
                     type=EventType.STOP_BREACH,
-                    symbol=row["symbol"],
+                    symbol=sym,
                     price=float(row["last_price"]),
                     payload={"rail": "MIS", "reason": "session_close_squareoff"},
                 )
