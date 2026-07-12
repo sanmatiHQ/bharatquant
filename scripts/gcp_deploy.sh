@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Full GCP deploy: provision (if needed) → rsync code → sync secrets → VM bootstrap
+#
+# Prereq: gcloud auth login  (maintainer@example.com)
+# Usage:   bash scripts/gcp_deploy.sh
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+STATE_FILE="$ROOT/.gcp_state.env"
+PROJECT="${GCP_PROJECT_ID:-your-gcp-project-id}"
+ZONE="${GCP_ZONE:-asia-south1-a}"
+VM_NAME="${VM_NAME:-bharatquant-engine}"
+REMOTE_DIR="/opt/bharatquant/zerodha-momo-rl"
+
+if ! gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -1 | grep -q .; then
+  echo "ERROR: Run: gcloud auth login"
+  exit 1
+fi
+
+echo "==> [1/5] Provision VM + static IP + GCS (idempotent)"
+bash "$ROOT/scripts/gcp_auth_check.sh"
+bash "$ROOT/scripts/gcp_provision.sh"
+
+# shellcheck disable=SC1090
+source "$STATE_FILE"
+
+echo "==> [2/5] Wait for VM SSH"
+for i in $(seq 1 30); do
+  if gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" --command "echo ok" &>/dev/null; then
+    break
+  fi
+  echo "  waiting... ($i/30)"
+  sleep 10
+done
+
+echo "==> [3/5] Rsync repo to VM (excludes secrets + db)"
+gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" --command \
+  "sudo mkdir -p /opt/bharatquant && sudo chown \$(whoami):\$(whoami) /opt/bharatquant"
+
+tar czf - -C "$ROOT" \
+  --exclude='.git' \
+  --exclude='.env' \
+  --exclude='.kite_token.json' \
+  --exclude='.kite_token.json.*' \
+  --exclude='data/trading.db' \
+  --exclude='data/trading.db-*' \
+  --exclude='backups' \
+  --exclude='logs' \
+  --exclude='__pycache__' \
+  --exclude='.pytest_cache' \
+  --exclude='venv' \
+  --exclude='.venv' \
+  --exclude='.gcp_state.env' \
+  . | \
+  gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" --command \
+  "mkdir -p '$REMOTE_DIR' && tar xzf - -C '$REMOTE_DIR'"
+
+echo "==> [4/5] Sync secrets"
+bash "$ROOT/scripts/gcp_sync_secrets.sh"
+
+echo "==> [5/5] VM bootstrap + start supervisor"
+gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" --command \
+  "sudo bash '$REMOTE_DIR/scripts/vm_bootstrap.sh'"
+
+STATIC_IP="${GCP_STATIC_IP:-}"
+echo ""
+echo "=== DEPLOYED ==="
+echo "Dashboard:  http://${STATIC_IP}:8080/dashboard"
+echo "Health:     http://${STATIC_IP}:8080/health"
+echo "Kite IP whitelist: ${STATIC_IP}"
+echo "Kite redirect:     http://${STATIC_IP}:8080/kite/callback"
+echo "SSH: gcloud compute ssh $VM_NAME --zone=$ZONE --project=$PROJECT"
+echo "Logs: gcloud compute ssh $VM_NAME --zone=$ZONE --command 'sudo journalctl -u bharatquant-supervisor -f'"

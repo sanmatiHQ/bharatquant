@@ -45,26 +45,46 @@ Dashboard: http://127.0.0.1:8080 · Health: http://127.0.0.1:8080/health
 
 ## GCP + GCS + auto-start (production)
 
+**One command** (from Mac, after `gcloud auth login`):
+
 ```bash
-GCP_PROJECT=your-project bash scripts/gcp_provision.sh
-# → static IP + gs://{project}-bharatquant bucket
-# Whitelist STATIC_IP at developers.kite.trade
+bash scripts/gcp_deploy.sh
 ```
 
-On VM, enable **market supervisor** (arms engine on GIFT/NSE — not trading cron):
+This provisions (idempotent):
+- GCE VM `bharatquant-engine` + **static IP** (asia-south1-a)
+- GCS bucket `your-gcp-project-id-bharatquant`
+- Firewall :8080 + :22
+- Pushes code + `.env` secrets + Kite token to VM
+- Runs `vm_bootstrap.sh` → systemd supervisor
+
+Project: `your-gcp-project-id` (shared billing with GeM stack)
+
+Manual steps (split):
 
 ```bash
-sudo cp deploy/*.service deploy/*.timer /etc/systemd/system/
-sudo systemctl enable --now bharatquant-supervisor
-sudo systemctl enable bharatquant-rl-train.timer
+bash scripts/gcp_provision.sh          # VM + IP + bucket only
+bash scripts/gcp_sync_secrets.sh       # push /etc/bharatquant/env
+bash scripts/vm_bootstrap.sh         # on VM via SSH
 ```
 
-Set in `/etc/bharatquant/env`: `GCS_BACKUP_BUCKET`, `GCP_STATIC_IP`, `SUPERVISOR_USE_SYSTEMD=true`
+**Kite developer console** (required for live API orders Apr 2026+):
+- Whitelist static IP from `.gcp_state.env` → `GCP_STATIC_IP`
+- Redirect URL: `http://<STATIC_IP>:8080/kite/callback`
 
-**Local Mac** (supervisor instead of manual start):
+On VM after deploy:
 
 ```bash
-python3.11 -m src.ops.market_supervisor
+gcloud compute ssh bharatquant-engine --zone=asia-south1-a --project=your-gcp-project-id
+sudo journalctl -u bharatquant-supervisor -f
+curl -s http://127.0.0.1:8080/health
+```
+
+Redeploy after code changes:
+
+```bash
+bash scripts/gcp_deploy.sh
+# or on VM: bash scripts/deploy_vm.sh
 ```
 
 ## RL / PPO

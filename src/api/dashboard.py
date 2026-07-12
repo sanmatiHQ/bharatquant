@@ -92,6 +92,9 @@ def create_app() -> FastAPI:
             "halted": is_halted(db),
             "kite_token": check_token(),
             "db": check_db(),
+            "gcp_project": os.getenv("GCP_PROJECT_ID", ""),
+            "gcp_static_ip": os.getenv("GCP_STATIC_IP", ""),
+            "gcs_bucket": os.getenv("GCS_BACKUP_BUCKET", ""),
         }
 
     @app.get("/api/auth/status")

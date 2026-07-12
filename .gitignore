@@ -23,6 +23,7 @@ data/trading.db-*
 backups/
 logs/*.log
 logs/*.pid
+.gcp_state.env
 !logs/.gitkeep
 
 # IDE

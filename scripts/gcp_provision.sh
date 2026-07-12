@@ -1,69 +1,105 @@
 #!/usr/bin/env bash
 # Provision BharatQuant GCE VM + static IP + GCS bucket (asia-south1)
-# Usage: GCP_PROJECT=your-project-id bash scripts/gcp_provision.sh
+# Uses existing billing project — does NOT create a new GCP project.
+#
+# Usage:
+#   bash scripts/gcp_provision.sh
+#   GCP_PROJECT=your-gcp-project-id bash scripts/gcp_provision.sh
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT:-bharatquant-prod}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+PROJECT="${GCP_PROJECT:-${GCP_PROJECT_ID:-your-gcp-project-id}}"
 REGION="${GCP_REGION:-asia-south1}"
 ZONE="${GCP_ZONE:-asia-south1-a}"
 VM_NAME="${VM_NAME:-bharatquant-engine}"
 MACHINE_TYPE="${MACHINE_TYPE:-e2-small}"
-DISK_GB="${DISK_GB:-20}"
+DISK_GB="${DISK_GB:-30}"
 BUCKET="${GCS_BACKUP_BUCKET:-${PROJECT}-bharatquant}"
+IP_NAME="${VM_NAME}-ip"
 
+_need_gcloud() {
+  if ! command -v gcloud &>/dev/null; then
+    echo "ERROR: gcloud CLI not installed"
+    exit 1
+  fi
+  if ! gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -1 | grep -q .; then
+    echo "ERROR: gcloud not authenticated — run: gcloud auth login"
+    exit 1
+  fi
+}
+
+_need_gcloud
 echo "==> Project $PROJECT"
-gcloud projects create "$PROJECT" --name="BharatQuant" 2>/dev/null || true
-gcloud config set project "$PROJECT"
+gcloud config set project "$PROJECT" --quiet
+
+echo "==> Enable APIs"
+gcloud services enable compute.googleapis.com storage.googleapis.com --quiet
 
 echo "==> GCS bucket gs://$BUCKET"
-gcloud storage buckets create "gs://${BUCKET}" --location="$REGION" 2>/dev/null || true
+if ! gcloud storage buckets describe "gs://${BUCKET}" &>/dev/null; then
+  gcloud storage buckets create "gs://${BUCKET}" --location="$REGION" --uniform-bucket-level-access
+fi
 
-echo "==> Reserve static IP"
-gcloud compute addresses create "${VM_NAME}-ip" --region="$REGION" 2>/dev/null || true
-STATIC_IP=$(gcloud compute addresses describe "${VM_NAME}-ip" --region="$REGION" --format='get(address)')
+echo "==> Reserve static IP $IP_NAME"
+if ! gcloud compute addresses describe "$IP_NAME" --region="$REGION" &>/dev/null; then
+  gcloud compute addresses create "$IP_NAME" --region="$REGION"
+fi
+STATIC_IP=$(gcloud compute addresses describe "$IP_NAME" --region="$REGION" --format='get(address)')
 echo "STATIC_IP=$STATIC_IP"
 
-STARTUP=$(cat <<'SCRIPT'
-#!/bin/bash
+STARTUP="#!/bin/bash
 set -e
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y python3.11 python3.11-venv git
-mkdir -p /opt/bharatquant /var/lib/bharatquant /var/log/bharatquant
-useradd -r -m bharatquant 2>/dev/null || true
-SCRIPT
-)
+apt-get install -y -qq python3.11 python3.11-venv python3-pip git curl sqlite3
+mkdir -p /opt/bharatquant /var/lib/bharatquant /var/log/bharatquant /etc/bharatquant
+id bharatquant &>/dev/null || useradd -r -m -d /home/bharatquant -s /bin/bash bharatquant
+chown -R bharatquant:bharatquant /opt/bharatquant /var/lib/bharatquant /var/log/bharatquant
+echo bharatquant-vm-ready > /var/log/bharatquant/startup.done
+"
 
-echo "==> Create VM with static IP"
-gcloud compute instances create "$VM_NAME" \
-  --zone="$ZONE" \
-  --machine-type="$MACHINE_TYPE" \
-  --image-family=ubuntu-2204-lts \
-  --image-project=ubuntu-os-cloud \
-  --boot-disk-size="${DISK_GB}GB" \
-  --address="$STATIC_IP" \
-  --scopes=storage-full,cloud-platform \
-  --tags=bharatquant \
-  --metadata=enable-oslogin=TRUE,startup-script="$STARTUP"
+if gcloud compute instances describe "$VM_NAME" --zone="$ZONE" &>/dev/null; then
+  echo "==> VM $VM_NAME already exists — skipping create"
+else
+  echo "==> Create VM $VM_NAME ($MACHINE_TYPE, ${DISK_GB}GB)"
+  gcloud compute instances create "$VM_NAME" \
+    --zone="$ZONE" \
+    --machine-type="$MACHINE_TYPE" \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --boot-disk-size="${DISK_GB}GB" \
+    --address="$STATIC_IP" \
+    --scopes=storage-full,cloud-platform \
+    --tags=bharatquant \
+    --metadata=enable-oslogin=TRUE,startup-script="$STARTUP"
+fi
 
 echo "==> Firewall: SSH + dashboard 8080"
-gcloud compute firewall-rules create bharatquant-allow-dashboard \
-  --allow=tcp:8080,tcp:22 \
-  --target-tags=bharatquant \
-  --description="BharatQuant dashboard" 2>/dev/null || true
+if ! gcloud compute firewall-rules describe bharatquant-allow-dashboard &>/dev/null; then
+  gcloud compute firewall-rules create bharatquant-allow-dashboard \
+    --allow=tcp:8080,tcp:22 \
+    --target-tags=bharatquant \
+    --description="BharatQuant dashboard + SSH"
+fi
+
+# Persist for local deploy scripts
+STATE_FILE="$ROOT/.gcp_state.env"
+cat > "$STATE_FILE" <<EOF
+GCP_PROJECT_ID=$PROJECT
+GCP_REGION=$REGION
+GCP_ZONE=$ZONE
+VM_NAME=$VM_NAME
+GCP_STATIC_IP=$STATIC_IP
+GCS_BACKUP_BUCKET=$BUCKET
+EOF
+chmod 600 "$STATE_FILE"
 
 echo ""
 echo "=== PROVISIONED ==="
-echo "STATIC_IP=$STATIC_IP"
-echo "GCS_BACKUP_BUCKET=$BUCKET"
+cat "$STATE_FILE"
 echo ""
-echo "NEXT STEPS:"
-echo "1. Billing: https://console.cloud.google.com/billing → attach to $PROJECT"
-echo "2. Kite whitelist: https://developers.kite.trade → IP → $STATIC_IP"
-echo "3. SSH: gcloud compute ssh $VM_NAME --zone=$ZONE"
-echo "4. Clone: git clone https://github.com/sanmatiHQ/bharatquant.git /opt/bharatquant/zerodha-momo-rl"
-echo "5. Env: cp .env.example /etc/bharatquant/env — set KITE_*, GCS_BACKUP_BUCKET=$BUCKET, GCP_STATIC_IP=$STATIC_IP"
-echo "6. Install units:"
-echo "   sudo cp deploy/*.service deploy/*.timer /etc/systemd/system/"
-echo "   sudo systemctl enable bharatquant-supervisor bharatquant-rl-train.timer"
-echo "   sudo systemctl start bharatquant-supervisor"
-echo "7. Redirect URL: http://${STATIC_IP}:8080/kite/callback"
+echo "NEXT: bash scripts/gcp_deploy.sh   # push code + secrets + bootstrap"
+echo "Kite whitelist IP: $STATIC_IP  →  https://developers.kite.trade"
+echo "Redirect URL: http://${STATIC_IP}:8080/kite/callback"
