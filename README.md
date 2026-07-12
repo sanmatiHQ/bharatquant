@@ -23,9 +23,16 @@ set -a && source .env && set +a
 # One-time bootstrap (DB, instruments, paper cash, Kite token check)
 python3.11 scripts/setup_local.py
 
-# Engine + dashboard :8080
+# Engine + dashboard :8080 (supervisor auto-arms; paper mode stays on)
 bash src/ops/start_system.sh
 ```
+
+**Continuous auto-trade loop** (no manual intervention):
+
+- **Enter:** momentum / VWAP / opening-range signals on live ticks
+- **Size:** deploys cash across open slots (`MAX_POSITIONS=8`, per-trade cap)
+- **Exit:** take-profit 2%, trailing stop 1.5%, stop-loss 4%, MIS square-off at close
+- **Learn:** RL records every decision; retrains after each sell (`RL_TRAIN_ON_TRADE=true`)
 
 **Kite login** (evening / token expired):
 
@@ -62,7 +69,7 @@ python3.11 -m src.ops.market_supervisor
 
 ## RL / PPO
 
-Observer records transitions on every agent decision. Trains after `SESSION_CLOSE` or nightly:
+Observer records transitions on every agent decision. Trains after each closed trade and at `SESSION_CLOSE`:
 
 ```bash
 python3.11 -m src.rl.rl_trainer --version ppo_v1 --epochs 4 --sync-gcs
