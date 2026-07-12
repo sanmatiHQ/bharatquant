@@ -1,0 +1,15 @@
+[Unit]
+Description=BharatQuant event-driven engine
+After=network.target
+
+[Service]
+Type=simple
+User=bharatquant
+WorkingDirectory=/opt/bharatquant/zerodha-momo-rl
+EnvironmentFile=/etc/bharatquant/env
+ExecStart=/usr/bin/python3.11 -m src.engine.main
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

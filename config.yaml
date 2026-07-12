@@ -1,0 +1,62 @@
+app:
+  tz: "Asia/Kolkata"
+  logs_dir: "logs"
+
+zerodha:
+  api_key: ""
+  api_secret: ""
+  redirect_url: ""
+  post_reset_time_ist: "07:35"
+
+trading:
+  mode: "paper"
+  universe_csv: "data/universe_full_nse.csv"
+  universe_tier: "main"   # main | with_sme | all_eq — rebuild via scripts/build_universe.sh
+  ws_watchlist_size: 200  # full universe screened; WS ticks on top-N + positions only
+  daily_investment_min: 500
+  daily_investment_max: 1000
+  max_rupees_per_trade: 1000
+  max_daily_loss_rupees: 2000
+  min_score: 0.65
+  slippage_bps: 4
+  max_positions: 5
+
+filters:
+  min_market_cap_cr: 2000
+  min_avg_volume_20d: 300000
+
+risk:
+  stop_loss_percent: 4.0
+  max_daily_loss_percent: 2.0
+
+storage:
+  sqlite_path: "data/trading.db"
+
+strategies:
+  enabled:
+    - combined_momentum
+    - fii_regime
+    - gift_gap
+    - opening_range
+    - short_term_reversal
+    - stop_loss_guard
+    - turtle_breakout
+    - vwap_reversion
+    - pairs_stat_arb
+    - quality_momentum
+    - insider_cluster
+    - bulk_accumulation
+    - iv_premium_sell
+    - cash_futures_basis
+    - expiry_gamma
+    - earnings_vol
+    - global_risk_beta
+
+rl:
+  active_version: "baseline"
+  model_dir: "models/rl"
+  algorithm: "ppo"
+  gamma: 0.99
+  lr: 0.0003
+  reward_drawdown_penalty: 0.5
+  train_offline: true

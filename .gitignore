@@ -1,0 +1,33 @@
+# Secrets — never commit
+.env
+.kite_token.json
+*.pem
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Data & logs (local dev only; production uses /var/lib/bharatquant)
+data/trading.db
+data/trading.db-*
+backups/
+logs/*.log
+!logs/.gitkeep
+
+# IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Playwright auth cache
+.playwright/

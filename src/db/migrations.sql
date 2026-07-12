@@ -1,0 +1,236 @@
+PRAGMA journal_mode=WAL;
+
+CREATE TABLE IF NOT EXISTS settings (
+  k TEXT PRIMARY KEY,
+  v TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cash_ledger (
+  ts INTEGER NOT NULL,
+  delta REAL NOT NULL,
+  note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  side TEXT CHECK(side IN ('BUY','SELL')) NOT NULL,
+  qty INTEGER NOT NULL,
+  price REAL NOT NULL,
+  amount REAL NOT NULL,
+  reason TEXT,
+  fees REAL DEFAULT 0,
+  stcg_ltcg TEXT CHECK(stcg_ltcg IN ('STCG','LTCG','NA')) DEFAULT 'NA',
+  order_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_trades_order_id ON trades(order_id);
+
+CREATE INDEX IF NOT EXISTS idx_trades_symbol_ts ON trades(symbol, ts);
+
+CREATE TABLE IF NOT EXISTS positions (
+  symbol TEXT PRIMARY KEY,
+  qty INTEGER NOT NULL,
+  avg_price REAL NOT NULL,
+  last_price REAL NOT NULL,
+  open_ts INTEGER NOT NULL,
+  rail TEXT DEFAULT 'CNC',
+  sector TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS fifo_lots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  qty INTEGER NOT NULL,
+  remaining_qty INTEGER NOT NULL,
+  buy_price REAL NOT NULL,
+  buy_ts INTEGER NOT NULL,
+  rail TEXT DEFAULT 'CNC',
+  trade_id INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_fifo_symbol ON fifo_lots(symbol, remaining_qty);
+
+CREATE TABLE IF NOT EXISTS shadow_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  strategy_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  action TEXT NOT NULL,
+  confidence REAL,
+  price REAL,
+  reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS calendar_events (
+  event_date TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  title TEXT,
+  risk_level TEXT DEFAULT 'medium',
+  PRIMARY KEY (event_date, event_type)
+);
+
+CREATE TABLE IF NOT EXISTS asm_gsm_symbols (
+  symbol TEXT PRIMARY KEY,
+  stage TEXT NOT NULL,
+  updated_ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS delivery_pct (
+  symbol TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  delivery_pct REAL NOT NULL,
+  PRIMARY KEY (symbol, trade_date)
+);
+
+CREATE TABLE IF NOT EXISTS fundamentals_cache (
+  symbol TEXT PRIMARY KEY,
+  roe REAL,
+  pe REAL,
+  market_cap_cr REAL,
+  updated_ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS option_iv (
+  symbol TEXT NOT NULL,
+  strike REAL NOT NULL,
+  option_type TEXT NOT NULL,
+  iv REAL NOT NULL,
+  ltp REAL,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (symbol, strike, option_type)
+);
+
+CREATE TABLE IF NOT EXISTS strategy_pnl (
+  strategy_id TEXT PRIMARY KEY,
+  realized_pnl REAL DEFAULT 0,
+  trade_count INTEGER DEFAULT 0,
+  updated_ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS symbol_sectors (
+  symbol TEXT PRIMARY KEY,
+  sector TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS daily_tax_summary (
+  summary_date TEXT PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  gross_buy REAL NOT NULL,
+  gross_sell REAL NOT NULL,
+  total_fees REAL NOT NULL,
+  net_before_tax REAL NOT NULL,
+  est_stcg_tax REAL NOT NULL,
+  est_ltcg_tax REAL NOT NULL,
+  net_after_tax REAL NOT NULL,
+  total_equity REAL NOT NULL,
+  trade_count INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS screening_results (
+  run_ts INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  momentum_score REAL NOT NULL,
+  r1m REAL, r3m REAL, rsi REAL, ma_align INTEGER,
+  PRIMARY KEY (run_ts, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS portfolio_history (
+  ts INTEGER PRIMARY KEY,
+  cash REAL NOT NULL,
+  holdings_value REAL NOT NULL,
+  total_value REAL NOT NULL,
+  realized_pnl REAL NOT NULL,
+  unrealized_pnl REAL NOT NULL,
+  max_drawdown REAL DEFAULT 0
+);
+
+-- RL observer buffer
+CREATE TABLE IF NOT EXISTS rl_transitions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  version TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  state BLOB NOT NULL,
+  action TEXT NOT NULL,
+  reward REAL NOT NULL,
+  next_state BLOB NOT NULL,
+  done INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS rl_versions (
+  version TEXT PRIMARY KEY,
+  algo TEXT NOT NULL,
+  status TEXT CHECK(status IN ('active','staging','retired')) NOT NULL,
+  created_ts INTEGER NOT NULL,
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS instruments (
+  tradingsymbol TEXT PRIMARY KEY,
+  instrument_token INTEGER NOT NULL,
+  exchange TEXT,
+  updated_ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  strategy_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  signal TEXT,
+  confidence REAL,
+  price REAL,
+  executed INTEGER DEFAULT 0,
+  reason TEXT,
+  delivery_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ingest_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  execution_allowed INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_source_ts ON ingest_log(source, ts);
+
+CREATE TABLE IF NOT EXISTS tick_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  ltp REAL NOT NULL,
+  volume INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_tick_symbol_ts ON tick_log(symbol, ts);
+
+CREATE TABLE IF NOT EXISTS bar_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  interval TEXT NOT NULL,
+  open REAL NOT NULL,
+  high REAL NOT NULL,
+  low REAL NOT NULL,
+  close REAL NOT NULL,
+  volume INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_bar_symbol_ts ON bar_log(symbol, ts, interval);
+
+CREATE TABLE IF NOT EXISTS portfolio_allocation (
+  run_ts INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  weight REAL NOT NULL,
+  target_qty INTEGER NOT NULL,
+  target_rupees REAL NOT NULL,
+  last_price REAL NOT NULL,
+  PRIMARY KEY (run_ts, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alloc_run ON portfolio_allocation(run_ts);
