@@ -126,7 +126,7 @@ def _start_process(module: str, pid_file: Path) -> None:
         start_new_session=True,
     )
     pid_file.write_text(str(proc.pid), encoding="utf-8")
-    logger.info("process_started", extra={"module": module, "pid": proc.pid})
+    logger.info("process_started", extra={"py_module": module, "pid": proc.pid})
 
 
 def _stop_process(pid_file: Path) -> None:
