@@ -32,6 +32,34 @@ class AgentRouter:
     def set_weight(self, strategy_id: str, w: float) -> None:
         self._weights[strategy_id] = max(0.0, w)
 
+    def _adjust_confidence(self, signal: Signal) -> float:
+        """OBI + corporate profit cues → fused confidence."""
+        sym = signal.symbol.replace("NSE:", "")
+        obi = float(self.ctx.orderbook_imbalance.get(sym, 0) or 0)
+        conf = signal.confidence
+        if signal.action == "BUY":
+            conf *= 1.0 + max(-0.1, min(0.1, obi * 0.12))
+        elif signal.action == "SELL":
+            conf *= 1.0 + max(-0.1, min(0.1, -obi * 0.12))
+
+        from ..intelligence.corporate_activity import corporate_profit_tilt
+
+        mult, reasons = corporate_profit_tilt(signal.symbol, self.ctx)
+        conf *= mult
+        if signal.action == "BUY" and mult < 0.8:
+            conf = min(conf, 0.52)
+        if reasons:
+            signal.meta = {**(signal.meta or {}), "corp_profit": reasons, "corp_mult": round(mult, 3)}
+        return min(0.98, max(0.0, conf))
+
+    def _obi_adjust_confidence(self, signal: Signal) -> float:
+        """Backward-compatible alias."""
+        return self._adjust_confidence(signal)
+
+    def _corporate_adjust_confidence(self, signal: Signal) -> float:
+        """Backward-compatible alias."""
+        return self._adjust_confidence(signal)
+
     def record_return(self, ret: float) -> None:
         self._returns.append(ret)
         if len(self._returns) > 90:
@@ -53,7 +81,8 @@ class AgentRouter:
                 continue
             if s.action in ("BUY", "SELL", "HEDGE"):
                 w = self._weights.get(s.strategy_id, 1.0)
-                scored.append((s.confidence * w, s))
+                conf = self._adjust_confidence(s)
+                scored.append((conf * w, s))
         if not scored:
             return None
 

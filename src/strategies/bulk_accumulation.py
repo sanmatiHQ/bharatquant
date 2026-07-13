@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..events.types import EventType, MarketEvent
+from ..intelligence.corporate_activity import normalize_bulk
 from .base import MarketContext, Signal, Strategy
 
 
@@ -22,4 +23,5 @@ class BulkAccumulationStrategy:
         sym = event.symbol.replace("NSE:", "")
         if not sym:
             return None
-        return Signal(self.id, sym, "BUY", "CNC", 0.68, f"bulk_qty_{int(qty)}")
+        norm = normalize_bulk(p)
+        return Signal(self.id, sym, "BUY", "CNC", 0.68, norm.get("reason", f"bulk_qty_{int(qty)}"))

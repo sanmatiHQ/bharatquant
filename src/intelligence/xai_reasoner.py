@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from ..db.database import DB
+from .corporate_activity import corporate_narrative_lines, load_corporate_activity
 
 
 def build_xai_narrative(db: DB, ctx: dict | None = None) -> dict[str, Any]:
@@ -25,6 +26,28 @@ def build_xai_narrative(db: DB, ctx: dict | None = None) -> dict[str, Any]:
     regime = str(ctx.get("regime", "NEUTRAL"))
 
     lines: list[str] = []
+
+    buy = float(
+        db._conn.execute("SELECT IFNULL(SUM(amount),0) FROM trades WHERE side='BUY'").fetchone()[0]
+    )
+    sell = float(
+        db._conn.execute("SELECT IFNULL(SUM(amount),0) FROM trades WHERE side='SELL'").fetchone()[0]
+    )
+    unreal = float(
+        db._conn.execute("SELECT IFNULL(SUM((last_price-avg_price)*qty),0) FROM positions").fetchone()[0]
+    )
+    total_pnl = (sell - buy) + unreal
+    equity_row = db._conn.execute("SELECT IFNULL(SUM(delta),0) c FROM cash_ledger").fetchone()
+    cash = float(equity_row["c"]) if equity_row else 0.0
+    pos_val = float(
+        db._conn.execute(
+            "SELECT IFNULL(SUM(last_price*qty),0) FROM positions WHERE qty > 0"
+        ).fetchone()[0]
+    )
+    lines.append(
+        f"Profit mission: equity ₹{cash + pos_val:,.0f}, PnL ₹{total_pnl:+,.0f} "
+        f"(realized ₹{sell - buy:+,.0f}, open ₹{unreal:+,.0f})."
+    )
 
     if premarket and premarket.get("text"):
         lines.append(f"Morning thesis: {premarket['text']}")
@@ -74,10 +97,15 @@ def build_xai_narrative(db: DB, ctx: dict | None = None) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
+    corp = load_corporate_activity(db, lookback_days=7)
+    for line in corporate_narrative_lines(corp):
+        lines.append(f"Corporate intel: {line}")
+
     return {
         "narrative": " ".join(lines),
         "lines": lines,
         "llm_bias": llm_bias,
         "regime": regime,
         "last_action": decision.get("action") if decision else None,
+        "corporate": corp,
     }

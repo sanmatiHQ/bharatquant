@@ -57,9 +57,12 @@ def _fii_label(fii: float) -> str:
     return "FII Mixed"
 
 
-async def run_premarket_routine(db: DB, ctx: Any) -> dict[str, Any]:
-    """08:45 burst — LLM bias, dashboard decision text, VIX budget gate."""
+async def run_premarket_routine(db: DB, ctx: Any, rl_agent: Any = None) -> dict[str, Any]:
+    """08:45 burst — LLM bias, regime RL hot-swap, dashboard decision text, VIX budget gate."""
     from ..ingest.llm_macro import compute_llm_bias
+    from ..agent.regime_classifier import classify_regime_from_prices, recent_index_closes
+
+    import numpy as np
 
     ctx_dict = {
         "fii_net_cr": getattr(ctx, "fii_net_cr", 0),
@@ -74,6 +77,13 @@ async def run_premarket_routine(db: DB, ctx: Any) -> dict[str, Any]:
     gift = float(getattr(ctx, "gift_nifty_change_pct", 0) or 0)
     fii = float(getattr(ctx, "fii_net_cr", 0) or 0)
     vix = float(getattr(ctx, "india_vix", 0) or vix_from_db(db))
+    closes = recent_index_closes(db)
+    if closes:
+        rs = classify_regime_from_prices(np.array(closes, dtype=np.float64), vix)
+        ctx.regime = rs.label
+    regime_swap: dict[str, Any] = {}
+    if rl_agent is not None:
+        regime_swap = rl_agent.hot_swap_regime_policy(getattr(ctx, "regime", "SIDEWAYS"))
     now = _ist_now()
     stamp = now.strftime("%I:%M %p").lstrip("0")
 
@@ -88,8 +98,10 @@ async def run_premarket_routine(db: DB, ctx: Any) -> dict[str, Any]:
     narrative = (
         f"[{stamp}] Bias set to {bias:+.2f} ({_bias_label(bias)}). "
         f"GIFT Nifty {gift:+.2f}%, {_fii_label(fii)}. "
-        f"VIX {vix:.1f}. {scaling}. {budget_note}"
+        f"VIX {vix:.1f}. Regime {getattr(ctx, 'regime', 'NEUTRAL')}. {scaling}. {budget_note}"
     )
+    if regime_swap.get("loaded"):
+        narrative += f" RL policy: {regime_swap.get('bucket')}."
 
     persist_decision(
         db,
@@ -115,8 +127,11 @@ async def run_premarket_routine(db: DB, ctx: Any) -> dict[str, Any]:
             (KEY_PREMARKET_DAY, _day_key()),
         )
 
-    logger.info("premarket_routine_done", extra={"bias": bias, "budget": budget_result.get("ok")})
-    return {"ok": True, "bias": bias, "narrative": narrative, "budget": budget_result}
+    logger.info(
+        "premarket_routine_done",
+        extra={"bias": bias, "budget": budget_result.get("ok"), "regime": getattr(ctx, "regime", ""), "rl": regime_swap},
+    )
+    return {"ok": True, "bias": bias, "narrative": narrative, "budget": budget_result, "regime_swap": regime_swap}
 
 
 def _update_rl_strategy_row(db: DB, version: str, meta: dict) -> None:
@@ -142,21 +157,29 @@ def _update_rl_strategy_row(db: DB, version: str, meta: dict) -> None:
         )
 
 
-async def run_postmarket_routine(db: DB) -> dict[str, Any]:
-    """16:15 — slippage, guarded RL, strategy version, post-mortem."""
+async def run_postmarket_routine(db: DB, *, force: bool = False) -> dict[str, Any]:
+    """16:15 — slippage, guarded RL, regime policies, strategy version, post-mortem."""
     from ..intelligence.llm_postmortem import run_llm_postmortem
+    from ..intelligence.sandbox_review import build_sandbox_review
     from ..ops.gcs_store import sync_rl_model
-    from ..rl.training_guardrails import guarded_train_and_promote, already_trained_today
+    from ..rl.training_guardrails import (
+        guarded_train_and_promote,
+        already_trained_today,
+        train_regime_policies,
+    )
 
     slippage = analyze_today_slippage(db)
     rl_meta: dict[str, Any] = {"skipped": True, "reason": "already_trained"}
     version = os.getenv("RL_ACTIVE_VERSION", "ppo_v1")
     model_dir = os.getenv("RL_MODEL_DIR", "models/rl")
 
-    if not already_trained_today(db):
+    if force or not already_trained_today(db):
         rl_meta = await asyncio.to_thread(guarded_train_and_promote, db, model_dir, version)
         if rl_meta.get("promoted") and rl_meta.get("train", {}).get("status") == "ok":
             await asyncio.to_thread(sync_rl_model, model_dir, version)
+        regime_meta = await asyncio.to_thread(train_regime_policies, db, model_dir, version)
+        rl_meta["regime_policies"] = regime_meta
+        await asyncio.to_thread(build_sandbox_review, db, recompute=True)
     _update_rl_strategy_row(db, version, rl_meta)
 
     postmortem = await run_llm_postmortem(db)
@@ -198,6 +221,7 @@ async def market_routines_loop(
     db: DB,
     ctx: Any,
     *,
+    rl_agent: Any = None,
     publish_activity: Optional[Callable[[str], None]] = None,
     interval_sec: float = 30.0,
 ) -> None:
@@ -221,7 +245,7 @@ async def market_routines_loop(
                 if hm == (pre_h, pre_m) and (not pre_done or pre_done["v"] != day):
                     if publish_activity:
                         publish_activity("Pre-market: running LLM macro + budget gate…")
-                    await run_premarket_routine(db, ctx)
+                    await run_premarket_routine(db, ctx, rl_agent=rl_agent)
                     await asyncio.sleep(61)
 
                 elif hm == (post_h, post_m) and (not post_done or post_done["v"] != day):

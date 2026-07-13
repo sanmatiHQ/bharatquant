@@ -23,8 +23,10 @@ from ..data.watchlist import is_watchlist_symbol
 from ..data.data_policy import DataIntegrityError, require_positive_price
 from ..strategies.registry import StrategyRegistry
 from ..ops.kill_switch import is_halted, set_halt
-from ..ops.daily_pnl import portfolio_state
+from ..ops.daily_pnl import day_drawdown_pct, portfolio_state
 from ..ops.budget_gate import can_deploy, consume_rolled_on_deploy, request_budget_increase
+from ..rl.action_mask import is_drawdown_halted, max_intraday_drawdown_pct
+from ..ops.panic_halt import panic_halt_and_squareoff
 from ..ops.cost_gate import min_qty_for_cost_edge
 from ..ingest.kite_holdings import real_symbols_held
 from ..ops.agent_state import persist_decision
@@ -193,7 +195,10 @@ class ExecutionEngine:
 
     def _expected_move_pct(self, sig: Signal) -> float:
         base = _STRATEGY_EDGE_PCT.get(sig.strategy_id, 1.5)
-        return base * sig.confidence
+        from ..intelligence.corporate_activity import corporate_profit_tilt
+
+        mult, _ = corporate_profit_tilt(sig.symbol, self.router.ctx)
+        return base * sig.confidence * mult
 
     async def _paper_option_hedge(self, chosen: Signal, event: MarketEvent) -> bool:
         """Paper buy protective put when IV strategy fires HEDGE."""
@@ -269,6 +274,18 @@ class ExecutionEngine:
         if event.symbol and event.price > 0:
             self.router.ctx.last_ltp[event.symbol] = float(event.price)
         port = self._portfolio()
+        dd_pct = day_drawdown_pct(self.db, port["total_equity"])
+        if is_drawdown_halted(self.db, port["total_equity"]):
+            if not is_halted(self.db):
+                panic_halt_and_squareoff(
+                    self.db,
+                    reason=f"intraday_drawdown_{dd_pct:.1f}pct",
+                )
+                await send_telegram(
+                    f"HALT intraday drawdown {dd_pct:.1f}% (limit {max_intraday_drawdown_pct():.0f}%) — positions flattened"
+                )
+                logger.warning("intraday_drawdown_halt", extra={"drawdown_pct": dd_pct})
+            return
         if port.get("day_loss_rupees", 0) >= self.max_loss_inr:
             set_halt(self.db, reason="daily_loss_rupees_gate")
             await send_telegram(f"HALT daily loss ₹{port['day_loss_rupees']:.0f}")

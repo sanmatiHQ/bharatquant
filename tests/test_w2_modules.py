@@ -23,13 +23,138 @@ def test_fifo_roundtrip(tmp_path):
 
 
 def test_regime_classifier():
+    from src.agent.regime_classifier import classify_regime_from_prices
+    import numpy as np
+
     r = classify_regime([0.002] * 20, vix=15)
     assert r.label in ("BULL", "BEAR", "SIDEWAYS", "HIGH_VOL")
+    bull = classify_regime_from_prices(np.linspace(100, 120, 60), vix=14)
+    assert bull.label == "BULL"
+    panic = classify_regime_from_prices(np.linspace(100, 105, 30), vix=25)
+    assert panic.label == "HIGH_VOL"
     wl = regime_strategy_whitelist("BULL")
     assert "combined_momentum" in wl
     neutral_wl = regime_strategy_whitelist("NEUTRAL")
     assert "opening_range" in neutral_wl
     assert "combined_momentum" in neutral_wl
+
+
+def test_corporate_activity_normalization_and_snapshot(tmp_path):
+    import json
+
+    from src.data.provenance import record_ingest
+    from src.events.types import EventType
+    from src.intelligence.corporate_activity import (
+        classify_corp_category,
+        load_corporate_activity,
+        normalize_bulk,
+        normalize_insider,
+    )
+
+    assert classify_corp_category("Board declares interim dividend of Rs 5") == "dividend"
+    assert classify_corp_category("Promoter group acquisition of shares") == "promoter"
+
+    ins = normalize_insider({"symbol": "INFY", "personName": "Promoter X", "acqMode": "Buy", "secAcq": 1000})
+    assert ins["category"] == "promoter"
+    assert ins["side"] == "buy"
+
+    bulk = normalize_bulk({"symbol": "TCS", "clientName": "ABC Fund", "buySell": "BUY", "qty": 250000, "price": 3500})
+    assert bulk["side"] == "buy"
+    assert "ABC Fund" in bulk["reason"]
+
+    db = DB(DBConfig(sqlite_path=str(tmp_path / "corp.db")))
+    with db.tx() as conn:
+        record_ingest(
+            conn,
+            source="test",
+            event_type=EventType.INSIDER_FILING,
+            payload={"symbol": "INFY", "personName": "Director Y", "acqMode": "Buy"},
+            execution_allowed=False,
+        )
+        record_ingest(
+            conn,
+            source="test",
+            event_type=EventType.BLOCK_DEAL,
+            payload={"symbol": "TCS", "clientName": "FII", "buySell": "BUY", "qty": 500000},
+            execution_allowed=False,
+        )
+        record_ingest(
+            conn,
+            source="test",
+            event_type=EventType.NEWS_ALERT,
+            payload={"symbol": "HDFC", "desc": "Declaration of dividend Rs 10 per share"},
+            execution_allowed=False,
+        )
+        record_ingest(
+            conn,
+            source="test",
+            event_type=EventType.FII_DII_UPDATE,
+            payload={"fii_net": 1200, "dii_net": -300, "date": "2026-07-12"},
+            execution_allowed=False,
+        )
+    snap = load_corporate_activity(db, lookback_days=7)
+    assert snap["counts"]["insider"] >= 1
+    assert snap["counts"]["bulk"] >= 1
+    assert snap["counts"]["dividends"] >= 1
+    assert snap["counts"]["mass_flow"] >= 1
+    assert len(snap["timeline"]) >= 3
+
+
+def test_corporate_profit_tilt():
+    from src.intelligence.corporate_activity import corporate_profit_tilt
+    from src.strategies.base import MarketContext
+
+    ctx = MarketContext(
+        promoter_watch=["INFY"],
+        dividend_watch=["HDFC"],
+        recent_corporate=[
+            {"symbol": "TCS", "kind": "bulk", "side": "buy", "category": "block_deal"},
+            {"symbol": "RELIANCE", "kind": "insider", "side": "sell", "category": "insider"},
+        ],
+    )
+    mult, reasons = corporate_profit_tilt("INFY", ctx)
+    assert mult > 1.0
+    assert "promoter_stake_up" in reasons
+
+    mult2, reasons2 = corporate_profit_tilt("RELIANCE", ctx)
+    assert mult2 < 1.0
+    assert "insider_sell" in reasons2
+
+    mult3, _ = corporate_profit_tilt("TCS", ctx)
+    assert mult3 > 1.0
+
+
+def test_tick_ring_buffer():
+    from src.feeds.bar_aggregator import TickRingBuffer
+
+    ring = TickRingBuffer(capacity=8)
+    for px in [100, 101, 102, 103]:
+        ring.push("INFY", px)
+    w = ring.window("INFY")
+    assert len(w) == 4
+    assert float(w[-1]) == 103.0
+    assert ring.atr_bps("INFY") > 0
+
+
+def test_session_ledger(tmp_path):
+    from src.ops.session_ledger import build_session_ledger
+
+    db = DB(DBConfig(sqlite_path=str(tmp_path / "s.db")))
+    db.add_cash(1, 10_000.0, "seed")
+    ts = int(time.time())
+    with db.tx() as conn:
+        conn.execute(
+            "INSERT INTO trades(ts,symbol,side,qty,price,amount,reason) VALUES (?,?,?,?,?,?,?)",
+            (ts, "INFY", "BUY", 1, 100.0, 100.0, "test_buy"),
+        )
+        conn.execute(
+            "INSERT INTO trades(ts,symbol,side,qty,price,amount,reason) VALUES (?,?,?,?,?,?,?)",
+            (ts + 60, "INFY", "SELL", 1, 98.0, 98.0, "test_sell"),
+        )
+    led = build_session_ledger(db)
+    assert led["trade_count"] >= 2
+    assert led["pnl"]["realized"] == -2.0
+    assert "plan" in led["plan_for_tomorrow"].lower() or "08:45" in led["plan_for_tomorrow"]
 
 
 def test_event_calendar(tmp_path):

@@ -22,6 +22,7 @@ class RLAgent:
         self.active_version = active_version or os.getenv("RL_ACTIVE_VERSION", "ppo_v1")
         self.db = db
         self._policy: PPOPolicy | None = None
+        self._regime_version: str | None = None
         self._load_policy()
 
     def _load_policy(self) -> None:
@@ -34,6 +35,33 @@ class RLAgent:
 
     def reload(self) -> None:
         self._load_policy()
+
+    def hot_swap_regime_policy(self, regime: str) -> dict:
+        """Load regime-specific weights if present; fallback to active_version."""
+        if os.getenv("REGIME_WEIGHTS_ENABLED", "true").lower() not in ("1", "true", "yes"):
+            return {"regime": regime, "skipped": True}
+        from ..agent.regime_classifier import regime_policy_version
+
+        bucket = regime_policy_version(regime)
+        regime_path = Path(self.model_dir) / "regimes" / bucket / "policy.npz"
+        default_path = Path(self.model_dir) / self.active_version / "policy.npz"
+        path = regime_path if regime_path.exists() else default_path
+        if path.exists():
+            self._policy = PPOPolicy.load(path)
+            self._regime_version = bucket if regime_path.exists() else self.active_version
+            logger.info(
+                "rl_regime_hot_swap",
+                extra={"regime": regime, "bucket": bucket, "path": str(path)},
+            )
+            return {
+                "regime": regime,
+                "bucket": bucket,
+                "path": str(path),
+                "loaded": True,
+                "fallback": not regime_path.exists(),
+            }
+        self._policy = None
+        return {"regime": regime, "bucket": bucket, "loaded": False, "fallback": True}
 
     def is_learning_enabled(self) -> bool:
         return self._policy is not None and self.active_version != "baseline"
@@ -60,12 +88,16 @@ class RLAgent:
         a, _ = self._policy.act(vec)
         probs = self._policy.act_probs(vec)
         if ltp > 0:
+            from .action_mask import is_drawdown_halted, masked_action_probs
+
+            halted = is_drawdown_halted(self.db)
             masked = masked_action_probs(
                 probs if isinstance(probs, np.ndarray) else np.array([0.33, 0.33, 0.34]),
                 cash=cash,
                 ltp=ltp,
                 db=self.db,
                 has_position=has_position,
+                drawdown_halted=halted,
             )
             a = int(np.argmax(masked))
         return index_action(a)

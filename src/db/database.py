@@ -43,6 +43,7 @@ class DB:
             "ALTER TABLE positions ADD COLUMN rail TEXT DEFAULT 'CNC'",
             "ALTER TABLE positions ADD COLUMN sector TEXT DEFAULT ''",
             "ALTER TABLE trades ADD COLUMN order_id TEXT",
+            "ALTER TABLE depth_snapshots ADD COLUMN obi REAL",
         ]
         for stmt in patches:
             try:

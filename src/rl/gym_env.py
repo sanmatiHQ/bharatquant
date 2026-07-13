@@ -19,7 +19,7 @@ except ImportError:
     spaces = None  # type: ignore
 
 from ..rl.state_encoder import STATE_DIM, encode_state_from_dict
-from ..rl.action_mask import is_buy_allowed
+from ..rl.action_mask import apply_action_mask, is_buy_allowed, max_intraday_drawdown_pct
 
 
 if GYM_AVAILABLE:
@@ -50,6 +50,7 @@ if GYM_AVAILABLE:
             self._qty = 0
             self._avg = 0.0
             self._hold_minutes = 0.0
+            self._peak_equity = starting_cash
             self._ctx: dict = {}
 
         def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, dict]:
@@ -60,6 +61,7 @@ if GYM_AVAILABLE:
             self._qty = 0
             self._avg = 0.0
             self._hold_minutes = 0.0
+            self._peak_equity = self.starting_cash
             self._ctx = {
                 "fii_net_cr": 0.0,
                 "gift_nifty_change_pct": 0.0,
@@ -90,11 +92,32 @@ if GYM_AVAILABLE:
                 dtype=np.float32,
             )
 
+        def _equity(self, ltp: float) -> float:
+            return self._cash + self._qty * ltp
+
+        def _drawdown_halted(self, ltp: float) -> bool:
+            eq = self._equity(ltp)
+            self._peak_equity = max(self._peak_equity, eq)
+            if self._peak_equity <= 0:
+                return False
+            dd = (self._peak_equity - eq) / self._peak_equity * 100.0
+            return dd >= max_intraday_drawdown_pct()
+
         def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, dict]:
             ltp = self._price()
             reward = 0.0
             terminated = False
             truncated = False
+            halted = self._drawdown_halted(ltp)
+
+            action = apply_action_mask(
+                action,
+                cash=self._cash,
+                ltp=ltp,
+                db=None,
+                has_position=self._qty > 0,
+                drawdown_halted=halted,
+            )
 
             if action == 1 and not is_buy_allowed(self._cash, ltp, db=None):
                 action = 0
@@ -118,6 +141,14 @@ if GYM_AVAILABLE:
                 self._qty = 0
                 self._avg = 0.0
                 self._hold_minutes = 0.0
+            elif halted and self._qty > 0:
+                pnl = (ltp - self._avg) * self._qty
+                reward += pnl / max(1.0, self._avg * self._qty)
+                self._cash += ltp * self._qty
+                self._qty = 0
+                self._avg = 0.0
+                self._hold_minutes = 0.0
+                truncated = True
             elif self._qty > 0:
                 self._hold_minutes += 1.0
                 unreal = (ltp - self._avg) / self._avg * 100.0 if self._avg > 0 else 0.0

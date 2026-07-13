@@ -36,7 +36,52 @@ def normalize_regime(regime: str) -> str:
         "RISK_ON": "BULL",
         "RISK_OFF": "BEAR",
         "NEUTRAL": "SIDEWAYS",
+        "BULL_TREND": "BULL",
+        "BEAR_TREND": "BEAR",
+        "HIGH_VOL": "HIGH_VOL",
     }.get(key, key)
+
+
+def recent_index_closes(db, symbol: str = "NIFTYBEES", limit: int = 60) -> List[float]:
+    """Recent closes for pre-market regime classification."""
+    sym = symbol.replace("NSE:", "")
+    for interval in ("1d", "5m"):
+        rows = db._conn.execute(
+            "SELECT close FROM bar_log WHERE symbol=? AND interval=? ORDER BY ts DESC LIMIT ?",
+            (sym, interval, limit),
+        ).fetchall()
+        if len(rows) >= 10:
+            return [float(r["close"]) for r in reversed(rows)]
+    return []
+
+
+def classify_regime_from_prices(closes: np.ndarray, vix: float = 0.0) -> RegimeState:
+    """Price + VIX regime for RL policy hot-swap (08:45 pre-market)."""
+    if len(closes) < 10:
+        return RegimeState("SIDEWAYS", 0.5)
+    short_ma = float(np.mean(closes[-10:]))
+    long_ma = float(np.mean(closes[-50:])) if len(closes) >= 50 else float(np.mean(closes))
+    if long_ma <= 0:
+        return RegimeState("SIDEWAYS", 0.5)
+    pct_distance = (short_ma - long_ma) / long_ma
+    if vix > 22.0:
+        return RegimeState("HIGH_VOL", min(1.0, vix / 30.0))
+    if pct_distance > 0.015:
+        return RegimeState("BULL", min(1.0, abs(pct_distance) * 50))
+    if pct_distance < -0.015:
+        return RegimeState("BEAR", min(1.0, abs(pct_distance) * 50))
+    return RegimeState("SIDEWAYS", 0.6)
+
+
+def regime_policy_version(regime: str) -> str:
+    """Folder name under models/rl/regimes/{REGIME}/policy.npz."""
+    r = normalize_regime(regime)
+    return {
+        "BULL": "BULL",
+        "BEAR": "BEAR",
+        "SIDEWAYS": "SIDEWAYS",
+        "HIGH_VOL": "HIGH_VOL",
+    }.get(r, "SIDEWAYS")
 
 
 def regime_strategy_whitelist(regime: str) -> set[str]:

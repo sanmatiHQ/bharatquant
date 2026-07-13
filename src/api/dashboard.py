@@ -78,6 +78,12 @@ def create_app() -> FastAPI:
         set_admin_cookie,
     )
 
+    @app.get("/api/feed/fast")
+    def feed_fast():
+        from .dashboard_feed import build_live_feed_fast
+
+        return build_live_feed_fast(db)
+
     @app.get("/api/feed/live")
     def feed_live():
         from .dashboard_feed import build_live_feed
@@ -92,14 +98,14 @@ def create_app() -> FastAPI:
 
         from fastapi.responses import StreamingResponse
 
-        from .dashboard_feed import build_live_feed
+        from .dashboard_feed import build_live_feed_fast
 
         async def _gen():
             last = ""
             yield ": connected\n\n"
             while True:
                 try:
-                    payload = await asyncio.to_thread(build_live_feed, db)
+                    payload = await asyncio.to_thread(build_live_feed_fast, db)
                     payload["transport"] = "sse"
                     blob = json.dumps(payload, sort_keys=True, default=str)
                     h = hashlib.md5(blob.encode()).hexdigest()

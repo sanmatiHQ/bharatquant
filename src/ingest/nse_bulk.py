@@ -50,6 +50,15 @@ async def poll_bulk_deals(publish: Callable, interval_sec: float = 120.0, db=Non
                     source="nseindia.com/snapshot-capital-market-largedeals",
                     execution_allowed=False,
                 )
+                if db is not None:
+                    with db.tx() as conn:
+                        record_ingest(
+                            conn,
+                            source="nseindia.com/snapshot-capital-market-largedeals",
+                            event_type=EventType.BLOCK_DEAL,
+                            payload=payload,
+                            execution_allowed=False,
+                        )
                 await publish(
                     MarketEvent(
                         type=EventType.BLOCK_DEAL,

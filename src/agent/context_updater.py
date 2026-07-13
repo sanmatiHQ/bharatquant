@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Callable
 
 from ..events.types import EventType, MarketEvent
@@ -64,6 +65,12 @@ class ContextUpdater:
             self.ctx.orb_low[sym] = float(p.get("low", event.price) or event.price)
             if iep > 0:
                 self.ctx.session_open[sym] = iep
+        elif event.type in (
+            EventType.INSIDER_FILING,
+            EventType.BLOCK_DEAL,
+            EventType.NEWS_ALERT,
+        ):
+            self._track_corporate(event)
         elif event.type == EventType.TICK and event.symbol:
             sym = event.symbol.replace("NSE:", "")
             if sym not in self.ctx.session_open and event.price > 0:
@@ -73,20 +80,60 @@ class ContextUpdater:
                 self.ctx.session_vwap[sym] = event.price
             raw = p.get("raw") or {}
             if raw and self.db:
-                from ..data.depth_store import record_depth, spread_from_tick
+                from ..data.depth_store import record_depth, orderbook_imbalance_from_tick, spread_from_tick
 
-                spread = record_depth(self.db, sym, raw)
+                spread, obi = record_depth(self.db, sym, raw)
                 self.ctx.spread_bps[sym] = spread
+                self.ctx.orderbook_imbalance[sym] = obi
+                from ..feeds.bar_aggregator import shared_tick_ring
+
+                ring = shared_tick_ring()
+                ring.push(sym, event.price)
+                self.ctx.tick_atr_bps[sym] = ring.atr_bps(sym)
             elif raw:
-                from ..data.depth_store import spread_from_tick
+                from ..data.depth_store import orderbook_imbalance_from_tick, spread_from_tick
 
                 _, _, spread = spread_from_tick(raw)
                 self.ctx.spread_bps[sym] = spread
+                self.ctx.orderbook_imbalance[sym] = orderbook_imbalance_from_tick(raw)
+                from ..feeds.bar_aggregator import shared_tick_ring
+
+                ring = shared_tick_ring()
+                ring.push(sym, event.price)
+                self.ctx.tick_atr_bps[sym] = ring.atr_bps(sym)
 
         if self.db is not None:
             from ..ops.agent_state import persist_context
 
             persist_context(self.db, self.ctx)
+
+    def _track_corporate(self, event: MarketEvent) -> None:
+        from ..intelligence.corporate_activity import (
+            normalize_bulk,
+            normalize_corp_announce,
+            normalize_insider,
+        )
+
+        p = dict(event.payload or {})
+        if event.type == EventType.INSIDER_FILING:
+            item = normalize_insider(p)
+        elif event.type == EventType.BLOCK_DEAL:
+            item = normalize_bulk(p)
+        else:
+            item = normalize_corp_announce(p)
+        if event.symbol and not item.get("symbol"):
+            item["symbol"] = event.symbol.replace("NSE:", "")
+        item["ts"] = int(p.get("_ts", 0)) or int(time.time())
+        self.ctx.recent_corporate = [item] + list(self.ctx.recent_corporate)[:19]
+        sym = str(item.get("symbol", ""))
+        if item.get("category") == "dividend" and sym:
+            self.ctx.dividend_watch = ([sym] + [s for s in self.ctx.dividend_watch if s != sym])[:10]
+        if item.get("category") == "promoter" and sym:
+            self.ctx.promoter_watch = ([sym] + [s for s in self.ctx.promoter_watch if s != sym])[:10]
+        logger.info(
+            "context_corporate",
+            extra={"kind": item.get("kind"), "symbol": sym, "category": item.get("category")},
+        )
 
     def subscribe(self, bus) -> None:
         types = (
@@ -98,6 +145,9 @@ class ContextUpdater:
             EventType.TICK,
             EventType.LLM_BIAS_UPDATE,
             EventType.FUTURES_OI_UPDATE,
+            EventType.INSIDER_FILING,
+            EventType.BLOCK_DEAL,
+            EventType.NEWS_ALERT,
         )
         for t in types:
             bus.subscribe(t, self.on_event)

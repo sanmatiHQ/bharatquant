@@ -17,7 +17,7 @@ _KEYS = (
     "pos_frac",
     "has_symbol",
     "llm_bias",
-    "spread_bps",
+    "obi",
     "futures_oi_chg",
     "us_vix_chg",
     "nikkei_chg",
@@ -55,7 +55,7 @@ def encode_state_from_dict(
         max(0.0, min(1.0, pos_frac)),
         1.0 if has_symbol else 0.0,
         _clamp(float(d.get("llm_bias", 0) or 0)),
-        max(0.0, min(1.0, float(d.get("spread_bps", 0) or 0) / 50.0)),
+        _clamp(float(d.get("obi", d.get("orderbook_imbalance", 0)) or 0)),
         _clamp(float(d.get("futures_oi_chg", 0) or 0) / 10.0),
         _clamp(float(d.get("us_vix_chg", 0) or 0) / 10.0),
         _clamp(float(d.get("nikkei_chg", 0) or 0) / 5.0),
@@ -77,9 +77,15 @@ def encode_state(
     regime = getattr(ctx, "regime", "NEUTRAL")
     pos_n = len(getattr(ctx, "positions", {}) or {})
     spread = float(getattr(ctx, "spread_bps", {}).get(symbol.replace("NSE:", ""), 0) if hasattr(ctx, "spread_bps") else 0)
+    obi = float(
+        getattr(ctx, "orderbook_imbalance", {}).get(symbol.replace("NSE:", ""), 0)
+        if hasattr(ctx, "orderbook_imbalance")
+        else 0
+    )
     if db and symbol:
-        from ..data.depth_store import latest_spread_bps
+        from ..data.depth_store import latest_obi, latest_spread_bps
 
+        obi = latest_obi(db, symbol)
         spread = latest_spread_bps(db, symbol)
     budget_frac = 1.0
     if db:
@@ -94,6 +100,8 @@ def encode_state(
         "india_vix": getattr(ctx, "india_vix", 0),
         "llm_bias": getattr(ctx, "llm_bias", 0),
         "spread_bps": spread,
+        "obi": obi,
+        "orderbook_imbalance": obi,
         "futures_oi_chg": getattr(ctx, "futures_oi_chg", 0),
         "us_vix_chg": getattr(ctx, "us_vix_chg", 0),
         "nikkei_chg": getattr(ctx, "nikkei_chg", 0),

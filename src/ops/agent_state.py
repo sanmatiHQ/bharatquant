@@ -36,6 +36,9 @@ def persist_context(db: DB, ctx: Any) -> None:
         "nikkei_chg": getattr(ctx, "nikkei_chg", 0),
         "hang_seng_chg": getattr(ctx, "hang_seng_chg", 0),
         "updated_ts": int(time.time()),
+        "recent_corporate": (getattr(ctx, "recent_corporate", None) or [])[:8],
+        "dividend_watch": list(getattr(ctx, "dividend_watch", None) or [])[:8],
+        "promoter_watch": list(getattr(ctx, "promoter_watch", None) or [])[:8],
     }
     _set(db, "agent_context", json.dumps(snap))
 

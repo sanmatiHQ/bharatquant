@@ -57,3 +57,22 @@ def test_build_holistic_signal_picks_affordable(tmp_path):
     assert sig.symbol == "SBIN"
     assert sig.strategy_id == "fast_snapshot"
     assert ltp == 150.0
+
+
+def test_build_holistic_signal_obi_boost(tmp_path):
+    db = DB(DBConfig(sqlite_path=str(tmp_path / "obi.db")))
+    ts = int(time.time())
+    run_ts = ts - 60
+    with db.tx() as conn:
+        conn.execute(
+            "INSERT INTO screening_results(run_ts, symbol, momentum_score) VALUES (?,?,?)",
+            (run_ts, "SBIN", 0.8),
+        )
+        conn.execute("INSERT INTO tick_log(ts, symbol, ltp) VALUES (?,?,?)", (ts, "SBIN", 150.0))
+        conn.execute("INSERT INTO cash_ledger(ts, delta, note) VALUES (?,?,?)", (ts, 10000, "seed"))
+    ctx = MarketContext()
+    ctx.orderbook_imbalance["SBIN"] = 0.6
+    ctx.tick_atr_bps["SBIN"] = 10.0
+    picked = build_holistic_signal(db, ctx)
+    assert picked is not None
+    assert "obi=" in picked[0].reason

@@ -16,7 +16,7 @@ def _get_setting(db: DB, key: str) -> str | None:
     return str(row["v"]) if row else None
 
 
-def load_live_pulse(db: DB) -> dict[str, Any]:
+def load_live_pulse(db: DB, *, kite_ok: bool | None = None) -> dict[str, Any]:
     now = int(time.time())
     window_60 = now - 60
     window_300 = now - 300
@@ -73,10 +73,16 @@ def load_live_pulse(db: DB) -> dict[str, Any]:
     hb = _get_setting(db, "engine_heartbeat_ts")
     hb_age = now - int(hb) if hb and hb.isdigit() else None
 
+    if kite_ok is None:
+        from ..ops.healthchecks import check_token
+
+        kite_ok = check_token(live=True)
+    token_valid = kite_ok
+
     ws_live = (
         last_tick_age is not None
         and last_tick_age < 15
-        and check_token(live=True)
+        and token_valid
         and hb_age is not None
         and hb_age < 90
     )
@@ -90,11 +96,21 @@ def load_live_pulse(db: DB) -> dict[str, Any]:
         positions=int(positions),
         bars_5m=int(bars_5m),
         last_tick_age=last_tick_age,
+        kite_ok=token_valid,
     )
+    if not ws_live and int(trades) > 0:
+        from .session_ledger import build_session_ledger
+
+        led = build_session_ledger(db)
+        narrative = (
+            f"Market closed · {led['trade_count']} trades · PnL ₹{led['pnl']['total']:+,.0f} "
+            f"(realized ₹{led['pnl']['realized']:+,.0f}). "
+            f"Plan: {led['plan_for_tomorrow'][:220]}"
+        )
 
     return {
         "ws_live": ws_live,
-        "kite_token_valid": check_token(live=True),
+        "kite_token_valid": token_valid,
         "ticks_per_min": int(ticks_1m),
         "ticks_5m": int(ticks_5m),
         "ticks_today": int(ticks_today),
@@ -123,10 +139,15 @@ def _build_narrative(
     positions: int,
     bars_5m: int,
     last_tick_age: int | None,
+    kite_ok: bool | None = None,
 ) -> str:
+    from ..ops.healthchecks import check_token, check_token_fast
+
+    if kite_ok is None:
+        kite_ok = check_token_fast()
     if not check_token(live=False):
         return "Kite token missing — login required before market data."
-    if not check_token(live=True):
+    if not kite_ok:
         return "Kite token expired — click Login. Bot cannot read live prices until refreshed."
     if last_tick_age is None or last_tick_age > 60:
         return (

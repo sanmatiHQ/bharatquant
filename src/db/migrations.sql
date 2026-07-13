@@ -292,6 +292,7 @@ CREATE TABLE IF NOT EXISTS depth_snapshots (
   spread_bps REAL,
   bid_qty INTEGER,
   ask_qty INTEGER,
+  obi REAL,
   PRIMARY KEY (symbol, ts)
 );
 

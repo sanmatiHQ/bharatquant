@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..events.types import EventType, MarketEvent
+from ..intelligence.corporate_activity import normalize_insider
 from .base import MarketContext, Signal, Strategy
 
 
@@ -22,4 +23,12 @@ class InsiderClusterStrategy:
         sym = event.symbol.replace("NSE:", "")
         if not sym:
             return None
-        return Signal(self.id, sym, "BUY", "CNC", 0.72, "insider_promoter_buy")
+        norm = normalize_insider(p)
+        return Signal(
+            self.id,
+            sym,
+            "BUY",
+            "CNC",
+            0.72,
+            norm.get("reason", "insider_promoter_buy"),
+        )

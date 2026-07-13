@@ -53,7 +53,7 @@ def _vm_load() -> dict[str, float | None]:
         import psutil
 
         return {
-            "cpu_pct": round(psutil.cpu_percent(interval=0.1), 1),
+            "cpu_pct": round(psutil.cpu_percent(interval=None), 1),
             "ram_pct": round(psutil.virtual_memory().percent, 1),
             "disk_pct": round(psutil.disk_usage("/").percent, 1),
         }
@@ -80,8 +80,23 @@ def _max_drawdown_today(db: DB) -> float:
     return round(max_dd, 2)
 
 
-def build_system_telemetry(db: DB, *, ws_live: bool = False, engine_live: bool = False) -> dict[str, Any]:
-    kite_ms = _kite_ping_ms()
+def build_system_telemetry(
+    db: DB,
+    *,
+    ws_live: bool = False,
+    engine_live: bool = False,
+    kite_ok: bool | None = None,
+    kite_ms: float | None = None,
+    fast: bool = False,
+) -> dict[str, Any]:
+    if fast:
+        from ..ops.healthchecks import check_token_fast
+
+        kite_ok = check_token_fast() if kite_ok is None else kite_ok
+        kite_ms = _ping_cache.get("latency_ms") if kite_ms is None else kite_ms
+    else:
+        kite_ms = _kite_ping_ms() if kite_ms is None else kite_ms
+        kite_ok = check_token(live=True) if kite_ok is None else kite_ok
     load = _vm_load()
     halt = halt_status(db)
     slumber = slumber_status(db)
@@ -89,7 +104,7 @@ def build_system_telemetry(db: DB, *, ws_live: bool = False, engine_live: bool =
     high_slippage_risk = kite_ms is not None and kite_ms > latency_warn
 
     kite_ring = "green"
-    if not check_token(live=True):
+    if not kite_ok:
         kite_ring = "red"
     elif high_slippage_risk:
         kite_ring = "orange"
@@ -112,7 +127,7 @@ def build_system_telemetry(db: DB, *, ws_live: bool = False, engine_live: bool =
     return {
         "ts": int(time.time()),
         "kite_latency_ms": kite_ms,
-        "kite_ok": check_token(live=True),
+        "kite_ok": kite_ok,
         "kite_status_ring": kite_ring,
         "llm_status_ring": llm_ring,
         "engine_status_ring": engine_ring,

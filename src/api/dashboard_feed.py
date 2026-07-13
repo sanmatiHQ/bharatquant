@@ -10,20 +10,23 @@ from ..ops.agent_state import load_agent_status
 from ..ops.budget_gate import budget_status
 from ..ops.daily_pnl import portfolio_state
 from ..ops.decision_review import build_learning_review
-from ..ops.healthchecks import check_token
+from ..ops.healthchecks import check_token, check_token_fast
 from ..ops.market_pulse import load_live_pulse
+from ..ops.session_ledger import build_session_ledger
 from ..ops.trading_phase import evaluate_live_gate
 
 
-def build_live_feed(db: DB) -> dict[str, Any]:
+def build_live_feed(db: DB, *, fast: bool = False) -> dict[str, Any]:
     """Single payload for dashboard polling — reduces round-trips."""
     now = int(time.time())
-    pulse = load_live_pulse(db)
+    kite_ok = check_token_fast() if fast else check_token(live=True)
+    pulse = load_live_pulse(db, kite_ok=kite_ok)
     agent = load_agent_status(db)
     portfolio = portfolio_state(db)
     budget = budget_status(db)
     phase = evaluate_live_gate(db)
-    learning = build_learning_review(db)
+    learning = {} if fast else build_learning_review(db)
+    session = build_session_ledger(db)
 
     conn = db._conn
     buy = float(conn.execute("SELECT IFNULL(SUM(amount),0) FROM trades WHERE side='BUY'").fetchone()[0])
@@ -146,16 +149,32 @@ def build_live_feed(db: DB) -> dict[str, Any]:
     except json.JSONDecodeError:
         rl_strategy_note = None
 
+    from ..intelligence.corporate_activity import load_corporate_activity
     from ..intelligence.xai_reasoner import build_xai_narrative
     from ..intelligence.sandbox_review import sandbox_snapshot_light
     from ..ops.sparkline_data import sparklines_for_symbols
     from ..ops.system_telemetry import build_system_telemetry
 
     engine_live = pulse.get("engine_heartbeat_age_sec") is not None and pulse["engine_heartbeat_age_sec"] < 120
-    telemetry = build_system_telemetry(db, ws_live=bool(pulse.get("ws_live")), engine_live=engine_live)
-    xai = build_xai_narrative(db, ctx)
+    telemetry = build_system_telemetry(
+        db,
+        ws_live=bool(pulse.get("ws_live")),
+        engine_live=engine_live,
+        kite_ok=kite_ok,
+        fast=fast,
+    )
+    xai = build_xai_narrative(db, ctx) if not fast else {
+        "narrative": (
+            f"PnL ₹{session['pnl']['total']:+,.0f} "
+            f"(realized ₹{session['pnl']['realized']:+,.0f}, open ₹{session['pnl']['unrealized']:+,.0f}). "
+            f"{session['trade_count']} trades logged. "
+            f"{session['plan_for_tomorrow'][:280]}"
+        ),
+        "lines": [session["plan_for_tomorrow"]],
+    }
+    corporate = load_corporate_activity(db, lookback_days=7)
     sym_set = list({p["symbol"] for p in positions} | {q["symbol"] for q in pulse.get("live_quotes", [])})
-    sparklines = sparklines_for_symbols(db, sym_set)
+    sparklines = {} if fast else sparklines_for_symbols(db, sym_set)
 
     return {
         "ts": now,
@@ -166,7 +185,7 @@ def build_live_feed(db: DB) -> dict[str, Any]:
         "engine_live": engine_live,
         "engine_phase": agent.get("engine_phase"),
         "ws_live": pulse.get("ws_live"),
-        "kite_ok": check_token(live=True),
+        "kite_ok": kite_ok,
         "ticks_per_min": pulse.get("ticks_per_min", 0),
         "narrative": pulse.get("narrative"),
         "regime": ctx.get("regime", "NEUTRAL"),
@@ -206,7 +225,13 @@ def build_live_feed(db: DB) -> dict[str, Any]:
         "supervisor_reason": agent.get("supervisor_reason"),
         "telemetry": telemetry,
         "xai": xai,
+        "session": session,
+        "corporate": corporate,
         "sparklines": sparklines,
         "sandbox": sandbox_snapshot_light(db),
-        "transport": "snapshot",
+        "transport": "fast" if fast else "snapshot",
     }
+
+
+def build_live_feed_fast(db: DB) -> dict[str, Any]:
+    return build_live_feed(db, fast=True)

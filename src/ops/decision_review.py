@@ -166,6 +166,9 @@ def _feed_health(conn) -> dict[str, Any]:
         ("GIFT_TICK", "gift_nifty"),
         ("FII_DII_UPDATE", "fii_dii"),
         ("GIFT_SESSION_CHANGE", "global_macro"),
+        ("INSIDER_FILING", "insider"),
+        ("BLOCK_DEAL", "bulk_deals"),
+        ("NEWS_ALERT", "corp_announce"),
     ):
         row = conn.execute(
             "SELECT ts, source FROM ingest_log WHERE event_type=? ORDER BY ts DESC LIMIT 1",

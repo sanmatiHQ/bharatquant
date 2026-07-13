@@ -82,16 +82,16 @@
 | ID | Component | Status | Depends | Deploy gate |
 |----|-----------|--------|---------|-------------|
 | BQ-40 | GIFT Nifty tick/poll → `GIFT_TICK` (signal only) | open | BQ-30 | Real price ≠ null 06:30 |
-| BQ-41 | NSE block deals → `BLOCK_DEAL` | open | BQ-30 | Row on trading day |
-| BQ-42 | NSE bulk deals ingest | open | BQ-41 | Historical table populated |
-| BQ-43 | NSE insider trades → `INSIDER_FILING` | open | BQ-30 | ≥1 row when filing exists |
+| BQ-41 | NSE block deals → `BLOCK_DEAL` | deployed | BQ-30 | Per-row `ingest_log` + `nse_bulk.py` |
+| BQ-42 | NSE bulk deals ingest | deployed | BQ-41 | Same API snapshot; normalized in `corporate_activity` |
+| BQ-43 | NSE insider trades → `INSIDER_FILING` | deployed | BQ-30 | `corporates-pit` poller + profit tilt |
 | BQ-44 | FII/DII on publish → `FII_DII_UPDATE` | open | BQ-30 | Real ₹ Cr from NSE |
 | BQ-45 | NSE pre-open indicative → `PREOPEN_PRICE` | open | BQ-22 | Price 09:00–09:15 |
 | BQ-46 | India VIX feed | open | BQ-22 | Live VIX in context |
 | BQ-47 | Kite option chain + IV → `IV_UPDATE` | open | BQ-22 | Chain for NIFTY |
 | BQ-48 | Delivery % (NSE) — India-specific | open | BQ-41 | deferred W2 if API hard |
 | BQ-49 | Global: US fut, crude, USDINR (1m poll) | open | BQ-30 | Values update overnight |
-| BQ-50 | NSE corp announcements RSS | open | BQ-30 | Event on RBI/earnings |
+| BQ-50 | NSE corp announcements RSS | deployed | BQ-30 | Per-row `NEWS_ALERT`; dividend/promoter classifier |
 | BQ-51 | Screener.in fundamentals (quality factor) | open | BQ-22 | ROE for 5 symbols |
 | BQ-52 | ASM/GSM / F&O ban universe filter | open | BQ-24 | Banned symbol rejected |
 
@@ -173,7 +173,7 @@
 | ID | Component | Status | Depends | Deploy gate |
 |----|-----------|--------|---------|-------------|
 | BQ-B0 | FastAPI replaces Flask | open | BQ-17 | All routes real data or 503 |
-| BQ-B1 | Dashboard — portfolio, P&L after tax | open | BQ-B0 | Matches SQLite |
+| BQ-B1 | Dashboard — portfolio, P&L after tax | deployed | BQ-B0 | Session ledger + KPIs on fast feed |
 | BQ-B2 | TradingView Lightweight Charts — OHLC | open | BQ-B0, BQ-22 | Real candles |
 | BQ-B3 | Trade markers on chart | open | BQ-B2 | BUY/SELL visible |
 | BQ-B4 | GIFT vs Nifty gap panel | open | BQ-40 | Live spread |
@@ -297,6 +297,14 @@
 | BQ-D10 | Feed stale reconnect 5s + deploy asyncio lock | deployed | BQ-36 | Reconnect on FEED_STALE |
 | BQ-D11 | Logrotate 7d on VM | verified | BQ-10 | `deploy/logrotate-bharatquant.conf` |
 | BQ-D12 | Full NSE universe screen (~58 names) | deployed | BQ-24 | `screening_results` >20 |
+| BQ-D13 | Orderbook imbalance (OBI) in RL state + depth store | verified | BQ-36 | `depth_snapshots.obi` populated |
+| BQ-D14 | Intraday drawdown circuit breaker (10% default) | verified | BQ-A6 | `intraday_drawdown_halt` log |
+| BQ-D15 | Regime-isolated RL policy hot-swap (08:45) | verified | BQ-D1 | `rl_regime_hot_swap` log |
+| BQ-D16 | NumPy tick ring buffer (vectorized micro features) | verified | BQ-36 | `TickRingBuffer` on bar agg |
+| BQ-D17 | Corporate intelligence layer (insider/bulk/corp RSS + FII mass flow) | deployed | BQ-41–43, BQ-50 | `corporate_activity.py` + `ingest_log` per row |
+| BQ-D18 | Profit tilt — corporate cues → confidence + cost-edge expected move | deployed | BQ-D17 | `corporate_profit_tilt()` in router/fast_snapshot |
+| BQ-D19 | Session ledger — trades, PnL, tomorrow plan on fast feed | deployed | BQ-D6 | `session` in `/api/feed/fast` |
+| BQ-D20 | Dashboard render fix (`renderSandbox` JS crash) | deployed | BQ-D6 | KPIs populate after hard refresh |
 
 ---
 

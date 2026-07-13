@@ -36,6 +36,8 @@ class MarketContext:
     llm_bias: float = 0.0
     llm_sector_bias: dict[str, float] = field(default_factory=dict)
     spread_bps: dict[str, float] = field(default_factory=dict)
+    orderbook_imbalance: dict[str, float] = field(default_factory=dict)
+    tick_atr_bps: dict[str, float] = field(default_factory=dict)
     orb_high: dict[str, float] = field(default_factory=dict)
     orb_low: dict[str, float] = field(default_factory=dict)
     session_open: dict[str, float] = field(default_factory=dict)
@@ -43,6 +45,9 @@ class MarketContext:
     session_vwap: dict[str, float] = field(default_factory=dict)
     positions: dict[str, dict[str, Any]] = field(default_factory=dict)
     strategy_scores: dict[str, float] = field(default_factory=dict)
+    recent_corporate: list[dict[str, Any]] = field(default_factory=list)
+    dividend_watch: list[str] = field(default_factory=list)
+    promoter_watch: list[str] = field(default_factory=list)
 
 
 @runtime_checkable

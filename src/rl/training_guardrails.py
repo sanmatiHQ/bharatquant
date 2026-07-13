@@ -145,9 +145,13 @@ def guarded_train_and_promote(
         from .sb3_trainer import SB3_AVAILABLE, train_sb3
 
         if SB3_AVAILABLE:
-            train_result = train_sb3(
-                db, model_dir, version, timesteps=sb3_timesteps(abnormal)
-            )
+            try:
+                train_result = train_sb3(
+                    db, model_dir, version, timesteps=sb3_timesteps(abnormal)
+                )
+            except Exception as exc:
+                logger.warning("sb3_train_failed_fallback_numpy", extra={"error": str(exc)})
+                train_result = train_ppo(db, model_dir, version, cfg=cfg)
         else:
             train_result = train_ppo(db, model_dir, version, cfg=cfg)
     else:
@@ -186,4 +190,141 @@ def guarded_train_and_promote(
     _persist_train_meta(db, meta)
     _mark_trained_today(db)
     logger.info("rl_guarded_train_done", extra={"promoted": promoted, "abnormal": abnormal})
+    return meta
+
+
+REGIME_BUCKETS = ("BULL", "BEAR", "SIDEWAYS", "HIGH_VOL")
+_REGIME_STATE_IDX = 2
+
+
+def _regime_bucket_from_state(state: list | dict) -> str:
+    if isinstance(state, dict):
+        vec = [float(state.get(str(i), 0)) for i in range(16)]
+    else:
+        vec = list(state)
+    if len(vec) <= _REGIME_STATE_IDX:
+        return "SIDEWAYS"
+    r = float(vec[_REGIME_STATE_IDX])
+    if r >= 0.5:
+        return "BULL"
+    if r <= -0.5:
+        return "BEAR"
+    if abs(r) < 0.15:
+        return "SIDEWAYS"
+    return "HIGH_VOL"
+
+
+def _load_regime_transitions(db: DB, bucket: str, limit: int = 400) -> list[dict]:
+    import json
+
+    import numpy as np
+
+    from .state_encoder import STATE_DIM, action_index
+
+    cap = limit
+    cur = db._conn.execute(
+        """
+        SELECT state, action, reward, next_state, done
+        FROM rl_transitions ORDER BY ts DESC LIMIT ?
+        """,
+        (cap * 4,),
+    )
+    rows = []
+    for r in cur.fetchall():
+        try:
+            state = json.loads(r["state"].decode() if isinstance(r["state"], bytes) else r["state"])
+            nxt = json.loads(r["next_state"].decode() if isinstance(r["next_state"], bytes) else r["next_state"])
+            if isinstance(state, dict):
+                state = list(state.values())[:STATE_DIM]
+            if isinstance(nxt, dict):
+                nxt = list(nxt.values())[:STATE_DIM]
+            if _regime_bucket_from_state(state) != bucket:
+                continue
+            rows.append({
+                "state": np.array(state, dtype=np.float64),
+                "action": action_index(str(r["action"])),
+                "reward": float(r["reward"]),
+                "next_state": np.array(nxt, dtype=np.float64),
+                "done": bool(r["done"]),
+            })
+            if len(rows) >= cap:
+                break
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+    return rows
+
+
+def _fine_tune_policy(policy: "PPOPolicy", rows: list, cfg: PPOConfig) -> None:
+    import numpy as np
+
+    states = np.stack([r["state"] for r in rows])
+    actions = np.array([r["action"] for r in rows])
+    rewards = np.array([r["reward"] for r in rows])
+    dones = np.array([r["done"] for r in rows])
+    returns = np.zeros_like(rewards)
+    g = 0.0
+    for i in reversed(range(len(rewards))):
+        g = rewards[i] + cfg.gamma * g * (1.0 - dones[i])
+        returns[i] = g
+    adv = returns - np.array([policy.value(s) for s in states])
+    adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+    for _ in range(max(1, cfg.epochs)):
+        for i in range(len(rows)):
+            s = states[i]
+            a = actions[i]
+            old_p = policy.probs(s)[a]
+            adv_i = adv[i]
+            logits = s @ policy.W + policy.b
+            logits -= logits.max()
+            probs = np.exp(logits) / np.exp(logits).sum()
+            new_p = probs[a]
+            ratio = new_p / max(old_p, 1e-8)
+            clipped = np.clip(ratio, 1 - cfg.clip_eps, 1 + cfg.clip_eps)
+            loss_pg = -min(ratio * adv_i, clipped * adv_i)
+            for j in range(probs.shape[0]):
+                grad = probs[j] * (1 if j == a else 0) - probs[j] * probs[a]
+                policy.W[:, j] -= cfg.lr * loss_pg * grad * s
+                policy.b[j] -= cfg.lr * loss_pg * grad
+            v_err = policy.value(s) - returns[i]
+            policy.Vw -= cfg.lr * v_err * s
+            policy.Vb -= cfg.lr * v_err
+
+
+def train_regime_policies(db: DB, model_dir: str, base_version: str = "ppo_v1") -> dict:
+    """
+    Bootstrap + fine-tune per-regime policies under models/rl/regimes/{BUCKET}/policy.npz.
+    Falls back to base ppo_v1 weights when regime-specific transitions are sparse.
+    """
+    from .ppo_trainer import PPOPolicy
+
+    base_path = Path(model_dir) / base_version / "policy.npz"
+    if not base_path.exists():
+        return {"status": "skipped", "reason": "no_base_policy", "path": str(base_path)}
+
+    cfg = training_config(db, abnormal=False)
+    regimes_out: dict[str, dict] = {}
+    for bucket in REGIME_BUCKETS:
+        dest = Path(model_dir) / "regimes" / bucket / "policy.npz"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(base_path, dest)
+        rows = _load_regime_transitions(db, bucket)
+        trained = False
+        if len(rows) >= 8:
+            pol = PPOPolicy.load(dest)
+            _fine_tune_policy(pol, rows, cfg)
+            pol.save(dest)
+            trained = True
+        regimes_out[bucket] = {
+            "path": str(dest),
+            "transitions": len(rows),
+            "fine_tuned": trained,
+        }
+        logger.info("regime_policy_ready", extra={"bucket": bucket, "n": len(rows), "trained": trained})
+
+    meta = {"ts": int(time.time()), "status": "ok", "base": str(base_path), "regimes": regimes_out}
+    with db.tx() as conn:
+        conn.execute(
+            "INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            ("rl_regime_policies_meta", json.dumps(meta)),
+        )
     return meta

@@ -72,6 +72,9 @@ bash "$ROOT/scripts/gcp_sync_secrets.sh"
 echo "==> [5/5] VM bootstrap + start supervisor"
 _ssh --command "sudo bash '$REMOTE_DIR/scripts/vm_bootstrap.sh'"
 
+echo "==> [6/6] Post-deploy: RL regimes + sandbox refresh"
+_ssh --command "cd '$REMOTE_DIR' && set -a && source /etc/bharatquant/env && set +a && sudo -u bharatquant python3.11 -m src.rl.rl_trainer --train-regimes --restore-gcs 2>/dev/null || true && sudo -u bharatquant python3.11 -m src.rl.rl_trainer --force-postmarket 2>/dev/null || true"
+
 STATIC_IP="${GCP_STATIC_IP:-}"
 echo ""
 echo "=== DEPLOYED ==="

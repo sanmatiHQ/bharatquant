@@ -458,7 +458,7 @@ async def main() -> None:
 
     from ..ops.market_routines import market_routines_loop
 
-    routines_task = asyncio.create_task(market_routines_loop(db, router.ctx))
+    routines_task = asyncio.create_task(market_routines_loop(db, router.ctx, rl_agent=router._rl_agent))
     logger.info(
         "engine_started",
         extra={

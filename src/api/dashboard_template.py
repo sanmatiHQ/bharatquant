@@ -44,6 +44,16 @@ def render_dashboard(css: str, n_strategies: int) -> str:
     <article class="kpi"><span class="kpi-label">Open positions</span><span class="kpi-val" id="kpiPos">—</span></article>
   </section>
 
+  <section class="panel highlight compact bento-ledger">
+    <div class="panel-head">
+      <h2>Today&apos;s ledger &amp; tomorrow&apos;s plan</h2>
+      <span class="badge ok" id="ledgerBadge">—</span>
+    </div>
+    <div class="ledger-pnl" id="ledgerPnl">Loading P&amp;L…</div>
+    <div class="ledger-trades" id="ledgerTrades"></div>
+    <div class="ledger-plan" id="ledgerPlan">Plan loads after first feed…</div>
+  </section>
+
   <section class="panel highlight compact bento-xai">
     <div class="panel-head">
       <h2>Agent Reasoning Protocol (XAI)</h2>
@@ -87,6 +97,16 @@ def render_dashboard(css: str, n_strategies: int) -> str:
     </div>
     <div id="activityStream" class="activity-stream" style="max-height:220px">
       <div class="empty-state">No activity yet</div>
+    </div>
+  </section>
+
+  <section class="panel compact bento-corp">
+    <div class="panel-head">
+      <h2>Profit opportunities</h2>
+      <span class="badge warn" id="corpBadge">—</span>
+    </div>
+    <div id="corpStream" class="corp-stream">
+      <div class="empty-state">Loading insider, bulk, dividend filings…</div>
     </div>
   </section>
 
@@ -136,8 +156,8 @@ def render_dashboard(css: str, n_strategies: int) -> str:
     <div class="panel-head"><h2>Recent trades</h2></div>
     <div class="table-scroll">
       <table class="data">
-        <thead><tr><th>Time</th><th>Side</th><th>Symbol</th></tr></thead>
-        <tbody id="tradesBody"><tr><td colspan="3" class="muted">No trades</td></tr></tbody>
+        <thead><tr><th>Time</th><th>Side</th><th>Symbol</th><th>Amount</th><th>Why</th></tr></thead>
+        <tbody id="tradesBody"><tr><td colspan="5" class="muted">No trades</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -244,14 +264,15 @@ function renderTelemetry(t){{
   $('healthDb').textContent=t.db_ok?'OK':'DOWN';
   $('healthEngine').textContent=t.engine_status_ring==='green'?'LIVE':(t.engine_status_ring==='orange'?'DEGRADED':'DOWN');
   $('healthCircuit').textContent=t.circuit_breaker?'TRIPPED':'ARMED';
-  const sb=f.sandbox;
-  if(sb){{
-    const st=sb.shadow_comparison||{{}};
-    $('sandboxBox').textContent='Sandbox '+sb.promote_recommendation+
-      ' | stable score '+(st.stable?.score?.toFixed?.(3)??'—')+
-      ' vs candidate '+(st.candidate?.score?.toFixed?.(3)??'—')+
-      ' ('+(st.reason||'pending')+')';
-  }}
+}}
+
+function renderSandbox(sb){{
+  if(!sb) return;
+  const st=sb.shadow_comparison||{{}};
+  $('sandboxBox').textContent='Sandbox '+sb.promote_recommendation+
+    ' | stable score '+(st.stable?.score?.toFixed?.(3)??'—')+
+    ' vs candidate '+(st.candidate?.score?.toFixed?.(3)??'—')+
+    ' ('+(st.reason||'pending')+')';
 }}
 
 function renderStatusPills(f){{
@@ -265,6 +286,7 @@ function renderStatusPills(f){{
 }}
 
 function renderFeed(f){{
+  try{{
   $('updatedAt').textContent='Updated '+fmtTime(f.ts);
   $('phaseTag').textContent=(f.phase||'paper').replace('_',' ').toUpperCase();
   const live=f.ws_live&&f.engine_live;
@@ -272,6 +294,7 @@ function renderFeed(f){{
   $('tickBadge').textContent=(f.ticks_per_min||0)+' ticks/min';
   $('regimeBadge').textContent=f.regime||'NEUTRAL';
   renderTelemetry(f.telemetry);
+  renderSandbox(f.sandbox);
   renderStatusPills(f);
   $('transportTag').textContent=f.transport||'poll';
 
@@ -284,6 +307,17 @@ function renderFeed(f){{
 
   const xai=f.xai||{{}};
   $('xaiBox').textContent=xai.narrative||'Awaiting market signal evaluation…';
+
+  const sess=f.session||{{}};
+  const pnl=sess.pnl||{{}};
+  $('ledgerBadge').textContent=(sess.trade_count||0)+' trades today';
+  $('ledgerPnl').innerHTML=
+    '<span class="'+pnlCls(pnl.total)+'">Total PnL '+fmtRs(pnl.total)+'</span>'+
+    ' · realized '+fmtRs(pnl.realized)+' · open '+fmtRs(pnl.unrealized)+
+    ' · deployed ₹'+Math.round((sess.budget||{{}}).deployed_today||0).toLocaleString('en-IN');
+  const lt=sess.trades||[];
+  $('ledgerTrades').innerHTML=lt.length?lt.map(t=>'<div class="ledger-row"><span class="act-time">'+fmtTime(t.ts)+'</span> '+esc(t.text)+' <span class="muted">'+esc(t.reason||'')+'</span></div>').join(''):'<div class="muted">No trades yet</div>';
+  $('ledgerPlan').textContent=sess.plan_for_tomorrow||'Pre-market plan runs 08:45 IST on trading days.';
 
   const chips=[];
   if(f.fii_net_cr!=null) chips.push('FII '+Number(f.fii_net_cr).toFixed(0)+' cr');
@@ -302,6 +336,18 @@ function renderFeed(f){{
     return '<div class="act-row'+fresh+'"><span class="act-time">'+fmtTime(a.ts)+'</span><span class="act-msg">'+icon+' '+esc(a.text)+'</span></div>';
   }}).join(''):'<div class="empty-state">No activity</div>';
 
+  const corp=f.corporate||{{}};
+  const cc=corp.counts||{{}};
+  $('corpBadge').textContent=(cc.insider||0)+' ins · '+(cc.bulk||0)+' blk · '+(cc.dividends||0)+' div';
+  const timeline=corp.timeline||[];
+  $('corpStream').innerHTML=timeline.length?timeline.slice(0,10).map(c=>{{
+    const tag=c.category||c.kind||'corp';
+    const sym=c.symbol?'<strong>'+esc(c.symbol)+'</strong> ':'';
+    const why=c.why?'<span class="corp-why">'+esc(c.why)+'</span>':'';
+    return '<div class="corp-row"><span class="corp-tag">'+esc(tag)+'</span>'+sym+
+      '<span class="corp-reason">'+esc(c.reason||c.title||'')+'</span>'+why+'</div>';
+  }}).join(''):'<div class="empty-state">No filings in 7-day window — pollers run on market days</div>';
+
   const sparks=f.sparklines||{{}};
   const q=f.live_quotes||[];
   $('quotesBody').innerHTML=q.length?q.slice(0,10).map(x=>'<tr><td class="sym">'+esc(x.symbol)+'</td><td>'+sparkSvg(sparks[x.symbol])+'</td><td>₹'+Number(x.ltp).toFixed(2)+'</td></tr>').join(''):
@@ -318,13 +364,17 @@ function renderFeed(f){{
     '<tr><td colspan="2" class="muted">No data</td></tr>';
 
   const tr=f.trades||[];
-  $('tradesBody').innerHTML=tr.length?tr.slice(0,10).map(t=>'<tr><td>'+fmtTime(t.ts)+'</td><td>'+esc(t.side)+'</td><td class="sym">'+esc(t.symbol)+'</td></tr>').join(''):
-    '<tr><td colspan="3" class="muted">No trades</td></tr>';
+  $('tradesBody').innerHTML=tr.length?tr.slice(0,10).map(t=>'<tr><td>'+fmtTime(t.ts)+'</td><td>'+esc(t.side)+'</td><td class="sym">'+esc(t.symbol)+'</td><td>₹'+Number(t.amount||0).toFixed(0)+'</td><td class="muted">'+esc((t.reason||'').slice(0,40))+'</td></tr>').join(''):
+    '<tr><td colspan="5" class="muted">No trades</td></tr>';
 
   if(isAdmin&&f.budget_pending){{
     $('budgetCard').style.display='block';
     $('budgetText').textContent='Agent requests ₹'+f.budget_pending.requested_max+' — '+(f.budget_pending.reason||'');
   }} else $('budgetCard').style.display='none';
+  }}catch(err){{
+    console.error('renderFeed',err);
+    $('statusStrip').innerHTML='<span class="pill err">Render error — hard refresh (Cmd+Shift+R)</span>';
+  }}
 }}
 
 function connectSSE(){{
@@ -337,8 +387,20 @@ function connectSSE(){{
 }}
 
 async function pollFeed(){{
-  try{{ renderFeed(await fetch('/api/feed/live').then(r=>r.json())); }}
-  catch(e){{ $('statusStrip').innerHTML='<span class="pill err">Feed error</span>'; }}
+  $('updatedAt').textContent='Loading feed…';
+  $('transportTag').textContent='loading';
+  try{{
+    const f=await fetch('/api/feed/fast').then(r=>{{
+      if(!r.ok) throw new Error('fast feed '+r.status);
+      return r.json();
+    }});
+    renderFeed(f);
+    fetch('/api/feed/live').then(r=>r.ok?r.json():null).then(j=>{{if(j) renderFeed(j);}}).catch(()=>{{}});
+  }}
+  catch(e){{
+    $('statusStrip').innerHTML='<span class="pill err">Feed error — retrying…</span>';
+    $('updatedAt').textContent='Feed failed — check network';
+  }}
 }}
 
 async function loadChart(key){{

@@ -14,6 +14,23 @@ import httpx
 _token_cache: dict[str, object] = {"ts": 0.0, "ok": False}
 
 
+def check_token_fast() -> bool:
+    """Dashboard fast path — use cache or token file only; no Kite HTTP."""
+    now = time.time()
+    if now - float(_token_cache["ts"]) < 300:
+        return bool(_token_cache["ok"])
+    path = os.getenv("KITE_ACCESS_TOKEN_FILE", ".kite_token.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        token = data.get("access_token")
+        if not token and isinstance(data.get("data"), dict):
+            token = data["data"].get("access_token")
+        return bool(token)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+
+
 def check_token(*, live: bool = True) -> bool:
     """Return True only if access token exists and validates against Kite REST."""
     now = time.time()

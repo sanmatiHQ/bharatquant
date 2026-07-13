@@ -1,10 +1,13 @@
 """Aggregate TICK stream into 5m/15m/1d bars + VWAP + momentum features."""
 from __future__ import annotations
 
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Deque, Dict, Tuple
+
+import numpy as np
 
 from ..events.types import EventType, MarketEvent
 
@@ -59,6 +62,67 @@ def _momentum_features(closes: Deque[float]) -> dict:
     return {"r1m": r1m, "r3m": r3m, "rsi": _rsi(arr)}
 
 
+class TickRingBuffer:
+    """Pre-allocated rolling LTP windows for vectorized micro features."""
+
+    def __init__(self, capacity: int = 100, n_symbols: int = 512) -> None:
+        self.capacity = max(16, capacity)
+        self._buf = np.zeros((n_symbols, self.capacity), dtype=np.float64)
+        self._pos = np.zeros(n_symbols, dtype=np.int32)
+        self._sym_to_slot: dict[str, int] = {}
+        self._next_slot = 0
+
+    def push(self, symbol: str, price: float) -> None:
+        if price <= 0:
+            return
+        sym = symbol.replace("NSE:", "")
+        slot = self._sym_to_slot.get(sym)
+        if slot is None:
+            if self._next_slot >= self._buf.shape[0]:
+                return
+            slot = self._next_slot
+            self._next_slot += 1
+            self._sym_to_slot[sym] = slot
+        idx = int(self._pos[slot] % self.capacity)
+        self._buf[slot, idx] = price
+        self._pos[slot] += 1
+
+    def window(self, symbol: str) -> np.ndarray:
+        sym = symbol.replace("NSE:", "")
+        slot = self._sym_to_slot.get(sym)
+        if slot is None:
+            return np.array([], dtype=np.float64)
+        n = min(int(self._pos[slot]), self.capacity)
+        if n <= 0:
+            return np.array([], dtype=np.float64)
+        if n < self.capacity:
+            return self._buf[slot, :n].copy()
+        start = int(self._pos[slot] % self.capacity)
+        if start == 0:
+            return self._buf[slot].copy()
+        return np.concatenate([self._buf[slot, start:], self._buf[slot, :start]])
+
+    def atr_bps(self, symbol: str, period: int = 14) -> float:
+        w = self.window(symbol)
+        if len(w) < 2:
+            return 0.0
+        tail = w[-period:] if len(w) >= period else w
+        diffs = np.abs(np.diff(tail))
+        return float(diffs.mean() / w[-1] * 10000.0) if w[-1] > 0 else 0.0
+
+
+_SHARED_RING: TickRingBuffer | None = None
+
+
+def shared_tick_ring() -> TickRingBuffer:
+    """Process-wide ring buffer — bar aggregator + context updater share one instance."""
+    global _SHARED_RING
+    if _SHARED_RING is None:
+        cap = int(os.getenv("TICK_RING_CAPACITY", "100"))
+        _SHARED_RING = TickRingBuffer(capacity=cap)
+    return _SHARED_RING
+
+
 class BarAggregator:
     def __init__(self, publish: Callable) -> None:
         self.publish = publish
@@ -66,6 +130,8 @@ class BarAggregator:
         self._last_vwap_side: Dict[str, str] = {}
         self._close_hist: Dict[str, Deque[float]] = {}
         self._vol_hist: Dict[str, Deque[float]] = {}
+        cap = int(os.getenv("TICK_RING_CAPACITY", "100"))
+        self.tick_ring = shared_tick_ring()
 
     def _bb_width(self, closes: list[float]) -> float:
         if len(closes) < 5:
@@ -91,6 +157,7 @@ class BarAggregator:
         px = event.price
         if not sym or px <= 0:
             return
+        self.tick_ring.push(sym, px)
         vol = float(event.payload.get("raw", {}).get("volume_traded", 0) or 0)
         now = event.ts or int(time.time())
         for bar_sec, ev_type in _INTERVALS:

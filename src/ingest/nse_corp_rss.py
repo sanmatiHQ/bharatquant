@@ -43,6 +43,15 @@ async def poll_corp_rss(publish: Callable, interval_sec: float = 600.0, db=None)
                 seen.add(key)
                 sym = str(row.get("symbol", ""))
                 payload = tag_payload(dict(row), source="nse.corp_announcements", execution_allowed=False)
+                if db is not None:
+                    with db.tx() as conn:
+                        record_ingest(
+                            conn,
+                            source="nse.corp_announcements",
+                            event_type=EventType.NEWS_ALERT,
+                            payload=payload,
+                            execution_allowed=False,
+                        )
                 await publish(
                     MarketEvent(
                         type=EventType.NEWS_ALERT,
@@ -50,15 +59,6 @@ async def poll_corp_rss(publish: Callable, interval_sec: float = 600.0, db=None)
                         payload=payload,
                     )
                 )
-            if db is not None:
-                with db.tx() as conn:
-                    record_ingest(
-                        conn,
-                        source="nse.corp",
-                        event_type=EventType.NEWS_ALERT,
-                        payload={"seen": len(seen)},
-                        execution_allowed=False,
-                    )
         except Exception:
             logger.exception("corp_rss_poll_error")
         await asyncio.sleep(interval_sec)

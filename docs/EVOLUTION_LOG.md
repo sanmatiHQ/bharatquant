@@ -672,3 +672,50 @@ Files: `training_guardrails.py`, `shadow_backtest.py`; `SESSION_CLOSE` uses `gua
 - `docs/SYSTEM_TRACKER.md` Layer 12 (BQ-OS1..OS8) marked deployed
 
 ---
+
+## 2026-07-13 — Dual-brain advisor patterns (extend existing modules)
+
+Applied relevant external architecture recommendations without new top-level files:
+
+- **OBI (orderbook imbalance)** — `depth_store.py` computes top-5 depth OBI; persisted on `depth_snapshots.obi`; wired into `MarketContext.orderbook_imbalance` and RL state vector slot 9 (`state_encoder.py`)
+- **Drawdown action mask** — `action_mask.py` blocks buys when intraday peak-to-trough ≥ `MAX_INTRADAY_DRAWDOWN_PCT` (default 10%); `execution_engine.py` auto `panic_halt_and_squareoff`; gym env mirrors mask
+- **Regime RL hot-swap** — `regime_classifier.classify_regime_from_prices` + `RLAgent.hot_swap_regime_policy()` at 08:45 pre-market; weights path `models/rl/regimes/{BULL|BEAR|SIDEWAYS|HIGH_VOL}/policy.npz` with fallback to `ppo_v1`
+- **NumPy tick ring** — `TickRingBuffer` in `bar_aggregator.py` (pre-allocated rolling matrix, `TICK_RING_CAPACITY=100`)
+
+**Rejected (unsafe / wrong stack):** dynamic LLM `exec()` strategy synthesis, Redis ring buffer, Cloud SQL, separate `macro_analyst.py` / `vector_cache.py` files.
+
+### Dashboard feed latency fix (same session)
+- **Root cause:** `/api/feed/live` called Kite `/user/profile` up to 4× per request + `psutil.cpu_percent(0.1)` block → 8–12s TTFB; UI showed "connecting" until complete.
+- **Fix:** `build_live_feed_fast()` (SQLite-only, cached token, no Kite HTTP) + `/api/feed/fast`; SSE uses fast path; poll paints KPIs first then enriches via full feed in background.
+
+### OBI + tick ring in decision path + regime training CLI
+- `fast_snapshot` + `router.fuse` use OBI and tick ATR from shared `TickRingBuffer`
+- `train_regime_policies()` — bootstrap `models/rl/regimes/{BULL|BEAR|SIDEWAYS|HIGH_VOL}/policy.npz` from base + fine-tune on filtered transitions
+- `python3.11 -m src.rl.rl_trainer --train-regimes` and `--force-postmarket` (sandbox refresh + shadow recompute)
+
+---
+
+## 2026-07-13 — Corporate intelligence + profit ledger + dashboard render fix
+
+### Corporate intelligence layer
+- **`src/intelligence/corporate_activity.py`** — normalizes NSE insider (`corporates-pit`), bulk/block (`snapshot-capital-market-largedeals`), corp announcements (`corporate-announcements`), FII/DII mass flow; 7-day snapshot + timeline for dashboard/XAI
+- **Ingest persistence fixed** — `nse_bulk.py` per-row `BLOCK_DEAL` in `ingest_log`; `nse_corp_rss.py` per-announcement `NEWS_ALERT` (was `{"seen": N}` summary only)
+- **`MarketContext`** extended: `recent_corporate`, `dividend_watch`, `promoter_watch`; `ContextUpdater` handles `INSIDER_FILING`, `BLOCK_DEAL`, `NEWS_ALERT`
+- **`corporate_profit_tilt()`** — promoter/insider/bulk buy boosts confidence + expected move; insider/bulk sell penalizes BUY
+- **Strategies** — `insider_cluster`, `bulk_accumulation` richer reasons; `earnings_vol` dividend → `BUY CNC` capture signal
+
+### Session ledger (open P&L + tomorrow plan)
+- **`src/ops/session_ledger.py`** — `build_session_ledger()`: today's trades, realized/unrealized PnL, `plan_for_tomorrow` (official premarket brief or auto-fallback from budget + screening watchlist)
+- **Dashboard feed** — `session` object on `/api/feed/fast` and `/api/feed/live`; fast-path XAI leads with PnL + plan (no longer "connecting" only)
+- **UI** — full-width **Today's ledger & tomorrow's plan** panel; Recent trades shows Amount + Why columns
+
+### Dashboard JS crash (root cause of empty KPIs)
+- **Bug:** `renderTelemetry()` referenced `f.sandbox` out of scope → `renderFeed()` aborted after timestamp; KPIs stayed `—`, ledger stuck "Loading P&L…", intermittent **Feed error**
+- **Fix:** `renderSandbox(sb)` separate function; `try/catch` in `renderFeed`; poll shows "Loading feed…" then paints fast feed first
+- **VM hotfix:** patched `dashboard_template.py` + supervisor restart; verified served HTML has `renderSandbox` not `const sb=f.sandbox`
+
+### Deploy notes
+- `gcp_deploy.sh` post-deploy uses `/etc/bharatquant/env` (not `.env` typo)
+- Post-deploy RL/postmarket may show `Permission denied` on env if sourced wrong user — non-fatal; engine heartbeat can lag after restart → ENGINE DOWN pill while process recovers (data still in SQLite)
+
+---

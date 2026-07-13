@@ -134,11 +134,31 @@ def build_holistic_signal(db: DB, ctx: MarketContext) -> Optional[tuple[Signal, 
         move_pct = (ltp - open_px) / open_px * 100 if open_px > 0 else 0.0
         mom = float(row["momentum_score"] or 0)
         spread = float(getattr(ctx, "spread_bps", {}).get(sym, 0) or 0)
+        obi = float(getattr(ctx, "orderbook_imbalance", {}).get(sym, 0) or 0)
+        atr_bps = float(getattr(ctx, "tick_atr_bps", {}).get(sym, 0) or 0)
         spread_penalty = 1.0 - min(0.25, spread / 100.0)
-        score = mom * macro_boost * spread_penalty * (1.0 + max(0.0, move_pct) * 0.15)
+        obi_boost = 1.0 + max(-0.12, min(0.12, obi * 0.15))
+        atr_penalty = 1.0 - min(0.2, atr_bps / 80.0)
+        from ..intelligence.corporate_activity import corporate_profit_tilt
+
+        corp_mult, corp_reasons = corporate_profit_tilt(sym, ctx)
+        score = (
+            mom
+            * macro_boost
+            * spread_penalty
+            * obi_boost
+            * atr_penalty
+            * corp_mult
+            * (1.0 + max(0.0, move_pct) * 0.15)
+        )
         if move_pct < -0.35:
             score *= 0.5
-        reason = f"holistic mom={mom:.2f} move={move_pct:.2f}% fii={fii:.0f} gift={gift:.2f}% llm={llm_bias:+.2f}"
+        reason = (
+            f"holistic mom={mom:.2f} move={move_pct:.2f}% fii={fii:.0f} gift={gift:.2f}% "
+            f"llm={llm_bias:+.2f} obi={obi:+.2f} atr={atr_bps:.0f}bps corp={corp_mult:.2f}"
+        )
+        if corp_reasons:
+            reason += f" ({','.join(corp_reasons[:2])})"
         if best is None or score > best[0]:
             best = (score, sym, ltp, reason)
 
