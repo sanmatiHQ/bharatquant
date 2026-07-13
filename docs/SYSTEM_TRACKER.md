@@ -311,7 +311,7 @@
 | BQ-OS5 | CONTRIBUTING + SECURITY + issue/PR templates | deployed | BQ-OS2 | Community health files present |
 | BQ-OS6 | GitHub Actions CI (pytest + audit) | deployed | BQ-OS3 | `.github/workflows/ci.yml` green |
 | BQ-OS7 | Git history infra scrub | verified | BQ-OS3 | `scrub_git_history.sh` — no prod IP in `git log -p` |
-| BQ-OS8 | Infra placeholders in tracked tree | deployed | BQ-OS3 | No `gem-bid-automation` / prod IP in `git ls-files` |
+| BQ-OS8 | Infra placeholders in tracked tree | deployed | BQ-OS3 | No production VM IP / hostname in `git ls-files` |
 
 ---
 

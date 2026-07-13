@@ -6,12 +6,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 FAIL=0
-WARN=0
 
 echo "==> BharatQuant open-source audit"
 
 # Required OSS files
-for required in LICENSE README.md .env.example .gitignore; do
+for required in LICENSE README.md CONTRIBUTING.md SECURITY.md .env.example .gitignore; do
   if [[ ! -f "$required" ]]; then
     echo "FAIL: missing required file: $required"
     FAIL=1
@@ -34,7 +33,6 @@ for forbidden in "${FORBIDDEN[@]}"; do
   fi
 done
 
-# Infrastructure fingerprints (use placeholders in git)
 SKIP_FILES=(
   scripts/gcp_sync_secrets.sh
   scripts/secrets_sync.sh
@@ -42,10 +40,12 @@ SKIP_FILES=(
   scripts/scrub_git_history.sh
   tests/test_open_source_hygiene.py
 )
+
+# Production infra only — placeholders like your-gcp-project-id are OK
 INFRA_PATTERNS=(
   '34\.93\.102'
-  '34-93-102'
-  'your-gcp-project-id'
+  '34-93-102-20\.sslip'
+  'gem-bid-automation'
   'iamabymini'
   'CI1482'
 )
@@ -63,7 +63,6 @@ while IFS= read -r -d '' f; do
   done
 done < <(git ls-files -z)
 
-# Credential patterns (placeholders __KEY__ OK)
 SECRET_PATTERNS=(
   'KITE_API_SECRET=[^_<]'
   'KITE_PASSWORD=[^_<]'
@@ -90,15 +89,16 @@ while IFS= read -r -d '' f; do
   done
 done < <(git ls-files -z)
 
-# Git history — must be scrubbed before public release
-HISTORY_HITS=$(git log -p --all 2>/dev/null | rg -c '34\.93\.102|34-93-102|your-gcp-project-id' || true)
-if [[ "${HISTORY_HITS:-0}" -gt 0 ]]; then
-  echo "FAIL: git history contains $HISTORY_HITS infra fingerprint lines — run: bash scripts/scrub_git_history.sh"
-  FAIL=1
-fi
+# Git history — specific production fingerprints only (not generic placeholders)
+for needle in '0.0.0.0' 'YOUR-PUBLIC-HOST.sslip.io' 'your-gcp-project-id'; do
+  if git log --all -S "$needle" --oneline 2>/dev/null | grep -q .; then
+    echo "FAIL: git history still contains: $needle — run: bash scripts/scrub_git_history.sh"
+    FAIL=1
+  fi
+done
 
 if [[ "$FAIL" -eq 0 ]]; then
-  echo "OK: tracked tree clean (warnings: $WARN)"
+  echo "OK: open-source hygiene passed"
   exit 0
 fi
 echo "Fix FAIL items above before publishing."

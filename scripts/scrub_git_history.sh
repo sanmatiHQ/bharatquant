@@ -8,9 +8,9 @@ cd "$ROOT"
 
 REPL=$(mktemp)
 cat > "$REPL" <<'EOF'
-your-gcp-project-id==>your-gcp-project-id
-YOUR.STATIC.IP==>YOUR.STATIC.IP
+0.0.0.0==>0.0.0.0
 YOUR-PUBLIC-HOST.sslip.io==>YOUR-PUBLIC-HOST.sslip.io
+your-gcp-project-id==>your-gcp-project-id
 maintainer@example.com==>maintainer@example.com
 EOF
 
@@ -29,12 +29,15 @@ echo "==> Rewriting git history (infra fingerprints only — no API keys expecte
 git filter-repo --force --replace-text "$REPL"
 
 echo "==> Verify"
-if git log -p --all 2>/dev/null | rg -q '34\.93\.102|your-gcp-project-id'; then
-  echo "FAIL: history still contains fingerprints"
-  exit 1
-fi
+for needle in '0.0.0.0' 'YOUR-PUBLIC-HOST.sslip.io' 'your-gcp-project-id'; do
+  if git log --all -S "$needle" --oneline 2>/dev/null | grep -q .; then
+    echo "FAIL: history still contains: $needle"
+    exit 1
+  fi
+done
 
 echo "OK: history scrubbed. Push with:"
+echo "  git remote add origin https://github.com/sanmatiHQ/bharatquant.git  # if missing"
 echo "  git push origin main --force-with-lease"
 
 rm -f "$REPL"
