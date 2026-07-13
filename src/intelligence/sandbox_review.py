@@ -90,3 +90,26 @@ def build_sandbox_review(db: DB, *, recompute: bool = False) -> dict:
             (_CACHE_KEY, json.dumps(payload)),
         )
     return payload
+
+
+def sandbox_snapshot_light(db: DB) -> dict:
+    """Fast path for SSE/feed — never runs bar replay."""
+    cached = _setting(db, _CACHE_KEY)
+    if cached:
+        return cached
+    rl_meta = _setting(db, "rl_last_train_meta") or {}
+    comparison = rl_meta.get("shadow")
+    promote = "hold_stable"
+    if comparison:
+        promote = "use_candidate" if comparison.get("passed") else "hold_stable"
+    elif rl_meta.get("promoted"):
+        promote = "use_candidate"
+    return {
+        "ts": int(time.time()),
+        "rl_version": os.getenv("RL_ACTIVE_VERSION", "ppo_v1"),
+        "promote_recommendation": promote,
+        "shadow_comparison": comparison,
+        "rl_last_train": rl_meta,
+        "from_cache": True,
+        "note": "Refresh via /api/agent/sandbox or 16:15 post-market routine.",
+    }

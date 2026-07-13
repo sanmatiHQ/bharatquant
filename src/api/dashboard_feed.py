@@ -147,7 +147,7 @@ def build_live_feed(db: DB) -> dict[str, Any]:
         rl_strategy_note = None
 
     from ..intelligence.xai_reasoner import build_xai_narrative
-    from ..intelligence.sandbox_review import build_sandbox_review
+    from ..intelligence.sandbox_review import sandbox_snapshot_light
     from ..ops.sparkline_data import sparklines_for_symbols
     from ..ops.system_telemetry import build_system_telemetry
 
@@ -156,8 +156,6 @@ def build_live_feed(db: DB) -> dict[str, Any]:
     xai = build_xai_narrative(db, ctx)
     sym_set = list({p["symbol"] for p in positions} | {q["symbol"] for q in pulse.get("live_quotes", [])})
     sparklines = sparklines_for_symbols(db, sym_set)
-
-    from ..intelligence.sandbox_review import build_sandbox_review
 
     return {
         "ts": now,
@@ -209,6 +207,6 @@ def build_live_feed(db: DB) -> dict[str, Any]:
         "telemetry": telemetry,
         "xai": xai,
         "sparklines": sparklines,
-        "sandbox": build_sandbox_review(db),
+        "sandbox": sandbox_snapshot_light(db),
         "transport": "snapshot",
     }
