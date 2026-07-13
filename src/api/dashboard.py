@@ -186,6 +186,9 @@ def create_app() -> FastAPI:
             json.dumps({"data": {"access_token": access}, "ts": int(time.time())}),
             encoding="utf-8",
         )
+        restart_flag = Path(os.getenv("LOGS_DIR", "logs")) / "engine_restart.flag"
+        restart_flag.parent.mkdir(parents=True, exist_ok=True)
+        restart_flag.write_text(str(int(time.time())), encoding="utf-8")
         return HTMLResponse(
             f"""<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Login OK</title>
             <style>{_BASE_CSS}</style></head><body><div class="wrap" style="margin-top:3rem">
@@ -560,6 +563,10 @@ _DASHBOARD_HTML = f"""<!DOCTYPE html>
       document.getElementById('modeBadge').textContent = (s.mode||'paper').toUpperCase();
       document.getElementById('tokenBadge').className = 'badge ' + (s.valid ? 'ok' : 'err');
       document.getElementById('tokenBadge').textContent = s.valid ? 'KITE OK' : 'KITE LOGIN NEEDED';
+      if (!s.valid) {{
+        document.getElementById('authStatus').textContent = 'Token expired — click Connect Zerodha Kite';
+        document.getElementById('authStatus').style.color = '#f87171';
+      }}
     }}
 
     document.getElementById('haltBtn').addEventListener('click', async () => {{

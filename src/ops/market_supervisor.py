@@ -30,8 +30,16 @@ from ..feeds.session_watcher import fetch_nse_status
 load_dotenv()
 logger = logging.getLogger("bharatquant.supervisor")
 _TZ = ZoneInfo(os.getenv("TZ", "Asia/Kolkata"))
+RESTART_FLAG = Path(os.getenv("LOGS_DIR", "logs")) / "engine_restart.flag"
 PID_FILE = Path(os.getenv("ENGINE_PID_FILE", "logs/engine.pid"))
 DASH_PID_FILE = Path(os.getenv("DASH_PID_FILE", "logs/dashboard.pid"))
+
+
+def _consume_restart_flag() -> bool:
+    if not RESTART_FLAG.exists():
+        return False
+    RESTART_FLAG.unlink(missing_ok=True)
+    return True
 
 
 def _now_ist() -> datetime:
@@ -98,16 +106,53 @@ def evaluate_market_activity(db: DB, nse_status: str) -> tuple[bool, str]:
     return False, "dormant"
 
 
-def _pid_running(pid_file: Path) -> bool:
+def _pid_running(pid_file: Path, expect_module: str = "") -> bool:
     if not pid_file.exists():
         return False
     try:
         pid = int(pid_file.read_text().strip())
         os.kill(pid, 0)
-        return True
     except (OSError, ValueError):
         pid_file.unlink(missing_ok=True)
         return False
+    try:
+        out = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "stat=,command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if not out:
+            pid_file.unlink(missing_ok=True)
+            return False
+        stat, _, cmd = out.partition(" ")
+        if stat.startswith("Z"):
+            pid_file.unlink(missing_ok=True)
+            return False
+        if expect_module and expect_module not in cmd:
+            pid_file.unlink(missing_ok=True)
+            return False
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pid_file.unlink(missing_ok=True)
+        return False
+
+
+def _engine_stale(db: DB, max_age_sec: int = 120) -> bool:
+    row = db._conn.execute("SELECT v FROM settings WHERE k='engine_heartbeat_ts'").fetchone()
+    if not row or not str(row["v"]).isdigit():
+        return True
+    return int(time.time()) - int(row["v"]) > max_age_sec
+
+
+def _ensure_engine_running(db: DB) -> None:
+    """Restart engine if PID is zombie, wrong process, or heartbeat stale."""
+    running = _pid_running(PID_FILE, "src.engine.main")
+    if running and not _engine_stale(db):
+        return
+    if running:
+        logger.warning("engine_stale_or_zombie", extra={"action": "restart"})
+        _stop_process(PID_FILE)
+    _start_process("src.engine.main", PID_FILE)
 
 
 def _start_process(module: str, pid_file: Path) -> None:
@@ -147,7 +192,8 @@ def start_engine_stack() -> None:
         subprocess.run(["sudo", "systemctl", "start", "bharatquant-dashboard"], check=False)
         return
     _start_process("src.engine.main", PID_FILE)
-    _start_process("src.api.dashboard", DASH_PID_FILE)
+    if not _pid_running(DASH_PID_FILE, "src.api.dashboard"):
+        _start_process("src.api.dashboard", DASH_PID_FILE)
 
 
 def stop_engine_stack() -> None:
@@ -198,12 +244,20 @@ async def run_supervisor() -> None:
         except Exception:
             nse = "Unknown"
         should_run, reason = evaluate_market_activity(db, nse)
-        is_running = _pid_running(PID_FILE)
+        is_running = _pid_running(PID_FILE, "src.engine.main")
 
         if should_run and not is_running:
             start_engine_stack()
             _persist_state(db, "ACTIVE", reason)
             logger.info("engine_armed", extra={"reason": reason, "nse": nse})
+        elif should_run and is_running:
+            if _consume_restart_flag():
+                logger.info("engine_restart_flag", extra={"action": "restart"})
+                _stop_process(PID_FILE)
+                _start_process("src.engine.main", PID_FILE)
+            else:
+                _ensure_engine_running(db)
+            _persist_state(db, "ACTIVE", reason)
         elif not should_run and is_running:
             stop_engine_stack()
             _persist_state(db, "DORMANT", reason)

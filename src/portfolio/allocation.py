@@ -214,15 +214,18 @@ def bootstrap_watchlist_allocation(db: DB, symbols: list[str]) -> int:
     w = 1.0 / len(picks)
     rows = []
     for sym in picks:
+        sym_clean = sym.replace("NSE:", "")
+        px = 500.0
         px_row = db._conn.execute(
-            "SELECT last_close FROM screening_results WHERE symbol=? ORDER BY run_ts DESC LIMIT 1",
-            (sym.replace("NSE:", ""),),
+            "SELECT last_price FROM portfolio_allocation WHERE symbol=? ORDER BY run_ts DESC LIMIT 1",
+            (sym_clean,),
         ).fetchone()
-        px = float(px_row["last_close"]) if px_row and px_row["last_close"] else 500.0
+        if px_row and px_row["last_price"]:
+            px = float(px_row["last_price"])
         qty = max(1, int(min(max_trade, budget * w) // px))
         rows.append(
             {
-                "symbol": sym.replace("NSE:", ""),
+                "symbol": sym_clean,
                 "weight": w,
                 "target_qty": qty,
                 "target_rupees": qty * px,

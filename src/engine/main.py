@@ -117,6 +117,16 @@ def _start_kite_feed(
     universe_csv: str,
     logger,
 ) -> Optional[KiteTickFeed]:
+    from ..ops.healthchecks import check_token
+
+    if not check_token(live=True):
+        logger.error("kite_token_invalid", extra={"hint": "re-login via /login"})
+        loop = asyncio.get_running_loop()
+        loop.call_soon_threadsafe(
+            bus.publish_nowait,
+            MarketEvent(type=EventType.TOKEN_EXPIRED, payload={"reason": "startup_check"}),
+        )
+        return None
     try:
         api_key, token = load_access_token()
     except Exception as e:
@@ -258,8 +268,11 @@ async def main() -> None:
 
     from ..portfolio.allocation import bootstrap_watchlist_allocation
 
-    bootstrap_watchlist_allocation(db, watch_syms)
-    logger.info("bootstrap_allocation_done", extra={"symbols": len(watch_syms)})
+    try:
+        bootstrap_watchlist_allocation(db, watch_syms)
+        logger.info("bootstrap_allocation_done", extra={"symbols": len(watch_syms)})
+    except Exception:
+        logger.exception("bootstrap_allocation_failed")
 
     async def on_pre_open(event: MarketEvent) -> None:
         """Screen full NSE universe before open — event-driven, not cron."""

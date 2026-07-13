@@ -14,14 +14,22 @@ logger = logging.getLogger("bharatquant.auth_recovery")
 async def handle_auth_event(event: MarketEvent, *, restart_feed: callable | None = None) -> bool:
     if event.type not in (EventType.TOKEN_EXPIRED, EventType.WS_AUTH_FAIL):
         return False
+    from ..ops.healthchecks import check_token
+
+    # Dashboard /login may have refreshed token already
+    if check_token(live=True) and restart_feed:
+        logger.info("auth_recovery_token_file_ok")
+        restart_feed()
+        return True
+
     user = os.getenv("KITE_USER_ID", "")
     pwd = os.getenv("KITE_PASSWORD", "")
     totp = os.getenv("KITE_TOTP_SECRET", "")
     api_key = os.getenv("KITE_API_KEY", "")
     token_file = os.getenv("KITE_ACCESS_TOKEN_FILE", ".kite_token.json")
     if not all([user, pwd, totp, api_key]):
-        logger.error("auth_recovery_missing_creds")
-        await send_telegram(f"AUTH FAIL {event.type} — creds missing")
+        logger.error("auth_recovery_missing_creds", extra={"has_totp": bool(totp)})
+        await send_telegram(f"AUTH FAIL {event.type} — re-login at dashboard /login")
         return False
     try:
         from ..auth.kite_totp import headless_login
@@ -38,18 +46,20 @@ async def handle_auth_event(event: MarketEvent, *, restart_feed: callable | None
         return False
 
 
-async def poll_token_health(publish, interval_sec: float = 600.0) -> None:
-    """Probe token file age; publish TOKEN_EXPIRED if stale."""
-    import time
-    from pathlib import Path
+async def poll_token_health(publish, interval_sec: float = 300.0) -> None:
+    """Probe Kite REST; publish TOKEN_EXPIRED when token stops validating."""
+    from ..ops.healthchecks import check_token, token_age_hours
 
-    path = Path(os.getenv("KITE_ACCESS_TOKEN_FILE", ".kite_token.json"))
     while True:
         try:
-            if path.exists():
-                age_h = (time.time() - path.stat().st_mtime) / 3600
-                if age_h > 20:
-                    await publish(MarketEvent(type=EventType.TOKEN_EXPIRED, payload={"age_h": age_h}))
+            if not check_token(live=True):
+                age = token_age_hours()
+                await publish(
+                    MarketEvent(
+                        type=EventType.TOKEN_EXPIRED,
+                        payload={"age_h": age, "reason": "live_check_failed"},
+                    )
+                )
         except Exception:
             logger.exception("token_health_error")
         await asyncio.sleep(interval_sec)
