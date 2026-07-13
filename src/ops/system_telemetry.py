@@ -34,7 +34,7 @@ def _kite_ping_ms() -> float | None:
         r = httpx.get(
             "https://api.kite.trade/user/profile",
             headers={"X-Kite-Version": "3", "Authorization": f"token {api_key}:{token}"},
-            timeout=8,
+            timeout=2.0,
         )
         ms = (time.perf_counter() - t0) * 1000
         if r.status_code == 200:
@@ -42,6 +42,9 @@ def _kite_ping_ms() -> float | None:
             return _ping_cache["latency_ms"]
     except Exception:
         pass
+    # Return last good ping instead of blocking feed on slow Kite responses
+    if _ping_cache.get("latency_ms") is not None:
+        return _ping_cache["latency_ms"]
     return None
 
 

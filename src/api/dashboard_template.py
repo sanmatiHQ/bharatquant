@@ -416,6 +416,8 @@ $('buyBtn').addEventListener('click',async()=>{{const sym=($('stockSymbol').valu
 checkAdmin().then(()=>{{
   loadChart('nifty50');
   connectSSE();
+  pollFeed();
+  setInterval(pollFeed,POLL_MS);
 }});
 </script>
 </body></html>"""

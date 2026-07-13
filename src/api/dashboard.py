@@ -96,9 +96,10 @@ def create_app() -> FastAPI:
 
         async def _gen():
             last = ""
+            yield ": connected\n\n"
             while True:
                 try:
-                    payload = build_live_feed(db)
+                    payload = await asyncio.to_thread(build_live_feed, db)
                     payload["transport"] = "sse"
                     blob = json.dumps(payload, sort_keys=True, default=str)
                     h = hashlib.md5(blob.encode()).hexdigest()
