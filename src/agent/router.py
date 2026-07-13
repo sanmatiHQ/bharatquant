@@ -9,7 +9,8 @@ from ..risk.risk_engine import RiskEngine, risk_config_from_env
 from ..risk.event_calendar import mis_allowed_today
 from ..data.asm_gsm_filter import is_excluded
 from ..risk.sector_limits import can_add_sector
-from ..agent.regime_classifier import regime_strategy_whitelist
+from ..ops.trade_sizing import can_buy_whole_share
+from ..agent.regime_classifier import normalize_regime, regime_strategy_whitelist
 from ..agent.var_breaker import var_breach
 from ..agent.shadow_trades import record_shadow
 from ..agent.kelly_sizing import rupees_from_kelly
@@ -26,7 +27,7 @@ class AgentRouter:
         self._weights: dict[str, float] = {}
         self._returns: list[float] = []
         self._shadow_mode = os.getenv("SHADOW_MODE", "false").lower() in ("1", "true", "yes")
-        self._rl_agent = RLAgent() if os.getenv("RL_AGENT_ENABLED", "true").lower() in ("1", "true", "yes") else None
+        self._rl_agent = RLAgent(db=db) if os.getenv("RL_AGENT_ENABLED", "true").lower() in ("1", "true", "yes") else None
 
     def set_weight(self, strategy_id: str, w: float) -> None:
         self._weights[strategy_id] = max(0.0, w)
@@ -36,25 +37,50 @@ class AgentRouter:
         if len(self._returns) > 90:
             self._returns = self._returns[-90:]
 
-    def fuse(self, signals: List[Signal]) -> Optional[Signal]:
+    def fuse(self, signals: List[Signal], *, event_price: float = 0.0, event_symbol: str = "") -> Optional[Signal]:
         if not signals:
             return None
         allowed = regime_strategy_whitelist(self.ctx.regime)
-        if self.ctx.regime == "RISK_OFF":
+        norm = normalize_regime(self.ctx.regime)
+        if norm == "BEAR":
             hedges = [s for s in signals if s.action == "HEDGE" and s.strategy_id in allowed]
             if hedges:
-                return max(hedges, key=lambda s: s.confidence)
-            return None
-        scored = []
+                return self._apply_rl_boost(max(hedges, key=lambda s: s.confidence))
+        max_trade = float(os.getenv("MAX_RUPEES_PER_TRADE", "1000"))
+        scored: list[tuple[float, Signal]] = []
         for s in signals:
-            if s.strategy_id not in allowed:
+            if s.strategy_id not in allowed and not s.strategy_id.startswith("custom_"):
                 continue
             if s.action in ("BUY", "SELL", "HEDGE"):
                 w = self._weights.get(s.strategy_id, 1.0)
                 scored.append((s.confidence * w, s))
         if not scored:
             return None
-        chosen = max(scored, key=lambda x: x[0])[1]
+
+        def _ltp(sig: Signal) -> float:
+            if event_symbol and sig.symbol == event_symbol and event_price > 0:
+                return event_price
+            return float(self.ctx.last_ltp.get(sig.symbol, 0))
+
+        affordable = []
+        for score, s in scored:
+            if s.action != "BUY":
+                affordable.append((score, s))
+                continue
+            ltp = _ltp(s)
+            cap = max_trade
+            if self.db:
+                from ..ops.trade_sizing import deploy_cap_inr
+
+                cash_row = self.db._conn.execute(
+                    "SELECT IFNULL(SUM(delta),0) c FROM cash_ledger"
+                ).fetchone()
+                cash = float(cash_row["c"]) if cash_row else 0.0
+                cap = deploy_cap_inr(self.db, cash)
+            if ltp <= 0 or can_buy_whole_share(ltp, cap):
+                affordable.append((score, s))
+        pool = affordable if affordable else scored
+        chosen = max(pool, key=lambda x: x[0])[1]
         return self._apply_rl_boost(chosen)
 
     def _apply_rl_boost(self, chosen: Signal) -> Optional[Signal]:
@@ -62,25 +88,45 @@ class AgentRouter:
             return chosen
         if chosen.action not in ("BUY", "SELL"):
             return chosen
-        vec = encode_state(self.ctx, symbol=chosen.symbol, confidence=chosen.confidence, score=chosen.confidence)
+        vec = encode_state(
+            self.ctx,
+            symbol=chosen.symbol,
+            confidence=chosen.confidence,
+            score=chosen.confidence,
+            db=self.db,
+        )
         state = {str(i): v for i, v in enumerate(vec)}
-        rl_action = self._rl_agent.act(state)
+        ltp = float(self.ctx.last_ltp.get(chosen.symbol, 0))
+        cash = 0.0
+        if self.db:
+            cash = float(self.db._conn.execute("SELECT IFNULL(SUM(delta),0) FROM cash_ledger").fetchone()[0])
+        has_pos = chosen.symbol.replace("NSE:", "") in (self.ctx.positions or {})
+        rl_action = self._rl_agent.act(state, chosen.symbol, ltp=ltp, cash=cash, has_position=has_pos)
         expected = "buy" if chosen.action == "BUY" else "sell"
+        rl_primary = os.getenv("RL_PRIMARY_MODE", "true").lower() in ("1", "true", "yes")
+
         if rl_action == expected:
+            boost = 1.15 if rl_primary and self._rl_agent.primary_ready() else 1.08
             return Signal(
                 chosen.strategy_id,
                 chosen.symbol,
                 chosen.action,
                 chosen.rail,
-                min(0.98, chosen.confidence * 1.08),
+                min(0.98, chosen.confidence * boost),
                 f"{chosen.reason}+rl_agree",
                 meta=chosen.meta,
             )
+
         min_veto = int(os.getenv("RL_MIN_TRANSITIONS_VETO", "80"))
-        n = 0
-        if self.db:
-            row = self.db._conn.execute("SELECT COUNT(*) AS c FROM rl_transitions").fetchone()
-            n = int(row["c"]) if row else 0
+        paper_learn = os.getenv("TRADING_PHASE", "paper_learn") == "paper_learn"
+        if paper_learn:
+            min_veto = max(min_veto, 200)
+        n = self._rl_agent.transition_count()
+
+        if rl_primary and self._rl_agent.primary_ready() and rl_action == "hold" and chosen.action == "BUY":
+            if chosen.confidence < 0.92:
+                return None
+
         if n >= min_veto and chosen.confidence < 0.88:
             return None
         return chosen

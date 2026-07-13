@@ -20,9 +20,13 @@ build/
 # Data & logs (local dev only; production uses /var/lib/bharatquant)
 data/trading.db
 data/trading.db-*
+data/bharatquant.db
+data/bharatquant.db-*
 backups/
 logs/*.log
 logs/*.pid
+logs/*.1
+models/
 .gcp_state.env
 !logs/.gitkeep
 

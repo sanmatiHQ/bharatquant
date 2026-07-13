@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
@@ -22,10 +23,10 @@ logger = logging.getLogger("bharatquant.ppo")
 
 @dataclass
 class PPOConfig:
-    lr: float = 3e-4
+    lr: float = 1e-5
     gamma: float = 0.99
     clip_eps: float = 0.2
-    epochs: int = 4
+    epochs: int = 2
     batch_size: int = 64
 
 
@@ -40,6 +41,11 @@ class PPOPolicy:
         self.Vb = 0.0
 
     def probs(self, state: np.ndarray) -> np.ndarray:
+        state = np.asarray(state, dtype=np.float64).reshape(-1)
+        if state.shape[0] < self.W.shape[0]:
+            state = np.pad(state, (0, self.W.shape[0] - state.shape[0]))
+        elif state.shape[0] > self.W.shape[0]:
+            state = state[: self.W.shape[0]]
         logits = state @ self.W + self.b
         logits -= logits.max()
         e = np.exp(logits)
@@ -51,7 +57,10 @@ class PPOPolicy:
     def act(self, state: np.ndarray) -> Tuple[int, float]:
         p = self.probs(state)
         a = int(np.argmax(p))
-        return a, float(p[a])
+        return a, p
+
+    def act_probs(self, state: np.ndarray) -> np.ndarray:
+        return self.probs(state)
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,21 +69,29 @@ class PPOPolicy:
     @classmethod
     def load(cls, path: Path) -> "PPOPolicy":
         data = np.load(path)
-        pol = cls()
-        pol.W = data["W"]
-        pol.b = data["b"]
-        pol.Vw = data["Vw"]
+        w = data["W"]
+        pol = cls(state_dim=max(int(w.shape[0]), STATE_DIM), n_actions=int(w.shape[1]))
+        if w.shape[0] < STATE_DIM:
+            pol.W[: w.shape[0], :] = w
+            pol.b = data["b"]
+            vw = data["Vw"]
+            pol.Vw[: len(vw)] = vw
+        else:
+            pol.W = w[:STATE_DIM, :] if w.shape[0] > STATE_DIM else w
+            pol.b = data["b"]
+            pol.Vw = data["Vw"][:STATE_DIM] if len(data["Vw"]) > STATE_DIM else data["Vw"]
         pol.Vb = float(data["Vb"])
         return pol
 
 
-def _load_transitions(db: DB, version: str, limit: int = 5000) -> List[dict]:
+def _load_transitions(db: DB, version: str, limit: int | None = None) -> List[dict]:
+    cap = limit or int(os.getenv("RL_MAX_TRANSITIONS_PER_TRAIN", "800"))
     cur = db._conn.execute(
         """
         SELECT state, action, reward, next_state, done
         FROM rl_transitions WHERE version=? ORDER BY ts DESC LIMIT ?
         """,
-        (version, limit),
+        (version, cap),
     )
     rows = []
     for r in cur.fetchall():

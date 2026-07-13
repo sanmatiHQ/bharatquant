@@ -39,6 +39,16 @@ class EventType(enum.StrEnum):
     VOLUME_ANOMALY = "VOLUME_ANOMALY"
     VWAP_CROSS = "VWAP_CROSS"
 
+    # Holistic decision — full market picture every N seconds (not per-tick parade)
+    FAST_SNAPSHOT = "FAST_SNAPSHOT"
+
+    # Hybrid brain / multimodal
+    LLM_BIAS_UPDATE = "LLM_BIAS_UPDATE"
+    FUTURES_OI_UPDATE = "FUTURES_OI_UPDATE"
+    DEPTH_UPDATE = "DEPTH_UPDATE"
+    MARGIN_ALERT = "MARGIN_ALERT"
+    RECONCILE_ALERT = "RECONCILE_ALERT"
+
     # Auth / ops
     TOKEN_EXPIRED = "TOKEN_EXPIRED"
     WS_AUTH_FAIL = "WS_AUTH_FAIL"

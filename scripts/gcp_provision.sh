@@ -76,12 +76,15 @@ else
     --metadata=enable-oslogin=TRUE,startup-script="$STARTUP"
 fi
 
-echo "==> Firewall: SSH + dashboard 8080"
+echo "==> Firewall: SSH + dashboard 8080 + HTTPS 80/443"
 if ! gcloud compute firewall-rules describe bharatquant-allow-dashboard &>/dev/null; then
   gcloud compute firewall-rules create bharatquant-allow-dashboard \
-    --allow=tcp:8080,tcp:22 \
+    --allow=tcp:8080,tcp:22,tcp:80,tcp:443 \
     --target-tags=bharatquant \
-    --description="BharatQuant dashboard + SSH"
+    --description="BharatQuant dashboard + SSH + Caddy TLS"
+else
+  gcloud compute firewall-rules update bharatquant-allow-dashboard \
+    --allow=tcp:8080,tcp:22,tcp:80,tcp:443 2>/dev/null || true
 fi
 
 # Persist for local deploy scripts
@@ -102,4 +105,4 @@ cat "$STATE_FILE"
 echo ""
 echo "NEXT: bash scripts/gcp_deploy.sh   # push code + secrets + bootstrap"
 echo "Kite whitelist IP: $STATIC_IP  →  https://developers.kite.trade"
-echo "Redirect URL: http://${STATIC_IP}:8080/kite/callback"
+echo "Redirect URL: https://YOUR-PUBLIC-HOST.sslip.io/kite/callback  (HTTPS — Kite requires this)"

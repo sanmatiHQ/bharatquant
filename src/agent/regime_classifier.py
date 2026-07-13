@@ -29,12 +29,74 @@ def classify_regime(returns: List[float], vix: float = 0.0) -> RegimeState:
     return RegimeState("SIDEWAYS", 0.6)
 
 
+def normalize_regime(regime: str) -> str:
+    """Map ingest labels (RISK_ON/OFF, NEUTRAL) to classifier buckets."""
+    key = (regime or "SIDEWAYS").upper()
+    return {
+        "RISK_ON": "BULL",
+        "RISK_OFF": "BEAR",
+        "NEUTRAL": "SIDEWAYS",
+    }.get(key, key)
+
+
 def regime_strategy_whitelist(regime: str) -> set[str]:
-    base = {"stop_loss_guard", "fii_regime"}
-    if regime == "BULL":
-        return base | {"combined_momentum", "turtle_breakout", "gift_gap", "opening_range", "quality_momentum"}
-    if regime == "BEAR":
-        return base | {"short_term_reversal", "vwap_reversion", "fii_regime"}
-    if regime == "HIGH_VOL":
-        return base | {"vwap_reversion", "stop_loss_guard", "iv_premium_sell"}
-    return base | {"combined_momentum", "short_term_reversal", "pairs_stat_arb"}
+    """Profit-smart: activate strategies that fit the current market regime."""
+    r = normalize_regime(regime)
+    advanced = {
+        "macro_confluence",
+        "gift_fii_sync",
+        "volume_breakout",
+        "bollinger_squeeze",
+        "dual_momentum_pro",
+        "fii_divergence",
+        "vwap_volume_confirm",
+        "crude_energy_beta",
+        "rsi_regime_adaptive",
+        "adaptive_alpha",
+        "strategy_lab",
+        "sector_rotation",
+        "options_greeks",
+    }
+    core = {
+        "stop_loss_guard",
+        "fii_regime",
+        "opening_range",
+        "affordable_momentum",
+        "fast_snapshot",
+        "vwap_reversion",
+        "pairs_stat_arb",
+    } | advanced
+    if r == "BULL":
+        return core | {
+            "combined_momentum",
+            "turtle_breakout",
+            "gift_gap",
+            "quality_momentum",
+            "bulk_accumulation",
+            "insider_cluster",
+        }
+    if r == "BEAR":
+        return core | {
+            "short_term_reversal",
+            "iv_premium_sell",
+            "global_risk_beta",
+            "cash_futures_basis",
+            "expiry_gamma",
+        }
+    if r == "HIGH_VOL":
+        return core | {
+            "iv_premium_sell",
+            "expiry_gamma",
+            "earnings_vol",
+            "global_risk_beta",
+        }
+    # SIDEWAYS / NEUTRAL — pursue profit across momentum + mean-reversion + events
+    return core | {
+        "combined_momentum",
+        "short_term_reversal",
+        "turtle_breakout",
+        "gift_gap",
+        "quality_momentum",
+        "bulk_accumulation",
+        "insider_cluster",
+    }

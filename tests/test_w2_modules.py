@@ -27,6 +27,9 @@ def test_regime_classifier():
     assert r.label in ("BULL", "BEAR", "SIDEWAYS", "HIGH_VOL")
     wl = regime_strategy_whitelist("BULL")
     assert "combined_momentum" in wl
+    neutral_wl = regime_strategy_whitelist("NEUTRAL")
+    assert "opening_range" in neutral_wl
+    assert "combined_momentum" in neutral_wl
 
 
 def test_event_calendar(tmp_path):

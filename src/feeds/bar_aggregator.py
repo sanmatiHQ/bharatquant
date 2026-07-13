@@ -65,6 +65,26 @@ class BarAggregator:
         self._bars: Dict[Tuple[str, int], _Bar] = {}
         self._last_vwap_side: Dict[str, str] = {}
         self._close_hist: Dict[str, Deque[float]] = {}
+        self._vol_hist: Dict[str, Deque[float]] = {}
+
+    def _bb_width(self, closes: list[float]) -> float:
+        if len(closes) < 5:
+            return 1.0
+        import statistics
+
+        m = statistics.mean(closes[-20:])
+        sd = statistics.stdev(closes[-20:]) if len(closes) >= 2 else 0.0
+        if m <= 0:
+            return 1.0
+        return (4 * sd) / m * 100.0
+
+    def _vol_ratio(self, sym: str, vol: float) -> float:
+        hist = self._vol_hist.setdefault(sym, deque(maxlen=20))
+        hist.append(vol)
+        if len(hist) < 3 or vol <= 0:
+            return 1.0
+        avg = sum(hist) / len(hist)
+        return vol / avg if avg > 0 else 1.0
 
     async def on_tick(self, event: MarketEvent) -> None:
         sym = event.symbol
@@ -109,6 +129,9 @@ class BarAggregator:
         hist = self._close_hist.setdefault(sym, deque(maxlen=20))
         hist.append(bar.close)
         mom = _momentum_features(hist) if ev_type == EventType.BAR_CLOSE_5M else {}
+        closes = list(hist)
+        bb_w = self._bb_width(closes) if ev_type == EventType.BAR_CLOSE_5M else 0.0
+        vol_ratio = self._vol_ratio(sym, bar.volume) if ev_type == EventType.BAR_CLOSE_5M else 1.0
         await self.publish(
             MarketEvent(
                 type=ev_type,
@@ -121,6 +144,8 @@ class BarAggregator:
                     "close": bar.close,
                     "volume": bar.volume,
                     "vwap": vwap,
+                    "bb_width": bb_w,
+                    "vol_ratio": vol_ratio,
                     **mom,
                 },
             )

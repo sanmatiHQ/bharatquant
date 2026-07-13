@@ -98,10 +98,20 @@ async def test_earnings_vol_strategy():
 
 @pytest.mark.asyncio
 async def test_global_risk_beta():
+    import os
+
     s = GlobalRiskBetaStrategy()
     ctx = MarketContext()
+    os.environ["TRADING_PHASE"] = "live_deploy"
     sig = await s.on_event(
         MarketEvent(type=EventType.GIFT_SESSION_CHANGE, payload={"us_sp": -1.2, "crude": 3.0}),
         ctx,
     )
     assert sig and ctx.regime == "RISK_OFF"
+    os.environ["TRADING_PHASE"] = "paper_learn"
+    ctx2 = MarketContext()
+    sig2 = await s.on_event(
+        MarketEvent(type=EventType.GIFT_SESSION_CHANGE, payload={"us_sp": -1.2, "crude": 3.0}),
+        ctx2,
+    )
+    assert sig2 is None and ctx2.regime == "NEUTRAL"

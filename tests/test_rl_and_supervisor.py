@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from src.db.database import DB, DBConfig
-from src.ops.market_supervisor import evaluate_market_activity
+from src.ops.market_supervisor import evaluate_market_activity, is_24x7_enabled
 from src.rl.ppo_trainer import PPOConfig, PPOPolicy, train_ppo
 from src.rl.rl_buffer import RLBuffer
 from src.rl.state_encoder import STATE_DIM, encode_state, index_action
@@ -59,7 +59,10 @@ def test_train_ppo_with_transitions(db):
 
 def test_evaluate_market_preopen(db):
     with patch("src.ops.market_supervisor._is_weekday", return_value=True):
-        with patch.dict(os.environ, {"PAPER_ALWAYS_ON": "false", "TRADING_MODE": "paper"}):
+        with patch.dict(
+            os.environ,
+            {"PAPER_ALWAYS_ON": "false", "TRADING_MODE": "paper", "ENGINE_24X7": "false"},
+        ):
             run, reason = evaluate_market_activity(db, "Pre-Open")
     assert run is True
     assert "pre" in reason
@@ -67,9 +70,22 @@ def test_evaluate_market_preopen(db):
 
 def test_evaluate_market_weekend(db):
     with patch("src.ops.market_supervisor._is_weekday", return_value=False):
-        with patch.dict(os.environ, {"PAPER_ALWAYS_ON": "false", "TRADING_MODE": "paper"}):
+        with patch.dict(os.environ, {"PAPER_ALWAYS_ON": "false", "TRADING_MODE": "paper", "ENGINE_24X7": "false"}):
             run, reason = evaluate_market_activity(db, "Close")
     assert run is False
+
+
+def test_evaluate_market_24x7_weekend(db):
+    with patch("src.ops.market_supervisor._is_weekday", return_value=False):
+        with patch.dict(os.environ, {"ENGINE_24X7": "true"}):
+            run, reason = evaluate_market_activity(db, "Close")
+    assert run is True
+    assert reason == "24x7_learn"
+
+
+def test_is_24x7_paper_default():
+    with patch.dict(os.environ, {"ENGINE_24X7": "true", "PAPER_ALWAYS_ON": "true", "TRADING_MODE": "paper"}, clear=False):
+        assert is_24x7_enabled() is True
 
 
 def test_action_index_roundtrip():

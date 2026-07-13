@@ -14,6 +14,7 @@ fi
 
 mkdir -p "${LOGS_DIR:-logs}" data
 
-# Supervisor starts engine + dashboard when market/GIFT activity detected
-# Paper mode: PAPER_ALWAYS_ON=true keeps stack running for autonomous paper trading
+# Supervisor starts engine + dashboard — 24×7 learn mode (ENGINE_24X7=true)
+# Paper mode: PAPER_ALWAYS_ON=true also keeps stack running
+# macOS auto-start on login: bash scripts/install_launch_agent.sh
 exec python3.11 -m src.ops.market_supervisor

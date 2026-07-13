@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from ..db.database import DB, DBConfig
 from ..ops.gcs_store import restore_rl_model, sync_rl_model
 from .ppo_trainer import PPOConfig, train_ppo
+from .training_guardrails import guarded_train_and_promote
 
 load_dotenv()
 logger = logging.getLogger("bharatquant.rl_trainer")
@@ -38,15 +39,19 @@ def main() -> None:
         ok = restore_rl_model(model_dir, args.version)
         print(f"restore_gcs: {'ok' if ok else 'skipped/failed'}")
 
-    result = train_ppo(
-        db,
-        model_dir,
-        version=args.version,
-        cfg=PPOConfig(epochs=args.epochs, batch_size=args.batch_size),
-    )
+    use_guarded = os.getenv("RL_USE_GUARDRAILS", "true").lower() in ("1", "true", "yes")
+    if use_guarded:
+        result = guarded_train_and_promote(db, model_dir, args.version)
+    else:
+        result = train_ppo(
+            db,
+            model_dir,
+            version=args.version,
+            cfg=PPOConfig(epochs=args.epochs, batch_size=args.batch_size),
+        )
     print(result)
 
-    if args.sync_gcs and result.get("status") == "ok":
+    if args.sync_gcs and (result.get("status") == "ok" or result.get("promoted")):
         ok = sync_rl_model(model_dir, args.version)
         print(f"sync_gcs: {'ok' if ok else 'failed'}")
 

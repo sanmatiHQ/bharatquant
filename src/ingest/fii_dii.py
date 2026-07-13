@@ -1,4 +1,4 @@
-"""FII/DII from public JSON API — publishes FII_DII_UPDATE event."""
+"""FII/DII — NSE primary, mrchartist fallback."""
 from __future__ import annotations
 
 import logging
@@ -8,47 +8,55 @@ import httpx
 
 from ..data.provenance import record_ingest, tag_payload
 from ..events.types import EventType, MarketEvent
+from .market_feed_client import fetch_nse_fii_dii
 
 logger = logging.getLogger("bharatquant.ingest.fii_dii")
 
 FII_DII_URL = "https://fii-diidata.mrchartist.com/api/data"
-SOURCE = "fii_diidata.mrchartist.com"
+MRCHARTIST_SOURCE = "fii_diidata.mrchartist.com"
+NSE_SOURCE = "nse.fiidiiTradeReact"
 
 
 async def fetch_fii_dii() -> dict[str, Any]:
+    try:
+        row = fetch_nse_fii_dii()
+        row["source"] = NSE_SOURCE
+        return row
+    except Exception:
+        logger.warning("fii_nse_failed_trying_mrchartist")
     async with httpx.AsyncClient(timeout=20.0) as client:
         r = await client.get(FII_DII_URL)
         r.raise_for_status()
         data = r.json()
-    if not data or "fii_net" not in data and "fn" not in data:
+    if not data:
         raise RuntimeError("FII/DII API returned empty payload")
     return {
         "fii_net": float(data.get("fii_net", data.get("fn", 0))),
         "dii_net": float(data.get("dii_net", data.get("dn", 0))),
         "date": data.get("date", data.get("d", "")),
         "pcr": float(data.get("pcr", 0) or 0),
+        "source": MRCHARTIST_SOURCE,
     }
 
 
 async def poll_fii_dii(publish: Callable[[MarketEvent], Any], interval_sec: float = 300.0, db=None) -> None:
-    """Poll when API may update — not fixed 08:45 clock."""
     import asyncio
 
-    last_date = ""
+    last_signature = ""
     while True:
         try:
             row = await fetch_fii_dii()
-            d = str(row.get("date", ""))
-            if d != last_date:
-                last_date = d
-                payload = tag_payload(row, source=SOURCE, execution_allowed=False)
+            sig = f"{row.get('date')}|{row.get('fii_net')}|{row.get('dii_net')}"
+            if sig != last_signature:
+                last_signature = sig
+                payload = tag_payload(row, source=row.get("source", NSE_SOURCE), execution_allowed=False)
                 ev = MarketEvent(type=EventType.FII_DII_UPDATE, payload=payload)
                 await publish(ev)
                 if db is not None:
                     with db.tx() as conn:
                         record_ingest(
                             conn,
-                            source=SOURCE,
+                            source=row.get("source", NSE_SOURCE),
                             event_type=EventType.FII_DII_UPDATE,
                             payload=payload,
                             execution_allowed=False,

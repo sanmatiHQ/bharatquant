@@ -21,6 +21,18 @@ def load_watchlist_symbols(db: DB, max_symbols: int | None = None) -> List[str]:
         if s not in symbols:
             symbols.append(s)
 
+    raw = db._conn.execute("SELECT v FROM settings WHERE k='agent_symbol_queue'").fetchone()
+    if raw:
+        try:
+            import json
+
+            for item in json.loads(raw["v"]) or []:
+                s = str(item.get("symbol", "")).replace("NSE:", "")
+                if s and s not in symbols:
+                    symbols.append(s)
+        except json.JSONDecodeError:
+            pass
+
     remaining = cap - len(symbols)
     if remaining > 0:
         cur = db._conn.execute("SELECT MAX(run_ts) AS ts FROM screening_results")

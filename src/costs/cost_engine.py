@@ -6,6 +6,7 @@ Verified rqalpha StockTransactionCostDecider._calc_commission (deciders.py:55-85
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Dict
 
@@ -62,3 +63,19 @@ class CostEngine:
 
     def classify_tax(self, hold_days: int) -> str:
         return "STCG" if hold_days < 365 else "LTCG"
+
+    def round_trip_cost_inr(self, qty: int, price: float, order_id: str | None = None) -> float:
+        """Brokerage + STT + statutory for a full buy→sell cycle."""
+        buy = self.compute_trade_costs("", qty, price, "BUY", order_id=order_id)
+        sell = self.compute_trade_costs("", qty, price, "SELL", order_id=order_id)
+        return buy + sell
+
+    def min_profit_move_pct(self, qty: int, price: float) -> float:
+        """Minimum favorable price move (%) to clear round-trip costs + buffer."""
+        turnover = price * qty
+        if turnover <= 0:
+            return 0.5
+        costs = self.round_trip_cost_inr(qty, price)
+        buffer = float(os.getenv("COST_EDGE_BUFFER", "1.25"))
+        return (costs / turnover) * 100.0 * buffer
+

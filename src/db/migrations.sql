@@ -234,3 +234,86 @@ CREATE TABLE IF NOT EXISTS portfolio_allocation (
 );
 
 CREATE INDEX IF NOT EXISTS idx_alloc_run ON portfolio_allocation(run_ts);
+
+CREATE TABLE IF NOT EXISTS option_positions (
+  symbol TEXT PRIMARY KEY,
+  underlying TEXT NOT NULL,
+  strike REAL NOT NULL,
+  option_type TEXT NOT NULL,
+  expiry TEXT NOT NULL,
+  qty INTEGER NOT NULL,
+  avg_premium REAL NOT NULL,
+  last_premium REAL NOT NULL,
+  open_ts INTEGER NOT NULL,
+  reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS kite_holdings (
+  symbol TEXT PRIMARY KEY,
+  qty INTEGER NOT NULL,
+  avg_price REAL NOT NULL,
+  ltp REAL NOT NULL,
+  pnl REAL DEFAULT 0,
+  product TEXT DEFAULT 'CNC',
+  exchange TEXT DEFAULT 'NSE',
+  synced_ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_discovery (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_id TEXT NOT NULL,
+  symbol TEXT,
+  conditions TEXT NOT NULL,
+  win_rate REAL,
+  avg_return REAL,
+  sample_count INTEGER,
+  discovered_ts INTEGER NOT NULL,
+  promoted INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS pending_orders (
+  order_id TEXT PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL,
+  qty INTEGER NOT NULL,
+  price REAL NOT NULL,
+  rail TEXT,
+  strategy_id TEXT,
+  reason TEXT,
+  status TEXT DEFAULT 'PENDING'
+);
+
+CREATE TABLE IF NOT EXISTS depth_snapshots (
+  symbol TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  bid REAL,
+  ask REAL,
+  spread_bps REAL,
+  bid_qty INTEGER,
+  ask_qty INTEGER,
+  PRIMARY KEY (symbol, ts)
+);
+
+CREATE TABLE IF NOT EXISTS futures_oi (
+  symbol TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  oi REAL,
+  oi_change_pct REAL,
+  PRIMARY KEY (symbol, ts)
+);
+
+CREATE TABLE IF NOT EXISTS reconcile_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  mismatches INTEGER,
+  details TEXT,
+  repaired INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS margin_snapshots (
+  ts INTEGER PRIMARY KEY,
+  available REAL,
+  utilised REAL,
+  util_pct REAL
+);

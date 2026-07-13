@@ -2,6 +2,22 @@
 
 **No manual data. No fake OHLC. No cron trading.**
 
+See **[CHANGELOG.md](CHANGELOG.md)** for full session history (2026-07-13: budget gate, real holdings, 30 strategies, dashboard UX).
+
+## Daily budget (hard cap)
+
+| Rule | Detail |
+|------|--------|
+| Deploy cap | **₹1,500–₹2,000/day** via `DAILY_INVESTMENT_MIN/MAX` (live Zerodha after profitability) |
+| Phase 1 | **paper_learn** — real Kite ticks, paper orders, RL on live market |
+| Phase 2 | **live_deploy** — set `TRADING_MODE=live` after `LIVE_GATE_MIN_PAPER_RETURN_PCT` met |
+| No auto top-up | Paper cash seeds **once** — agent cannot invent money |
+| Raise limit | Agent requests via dashboard → you **Approve** within **15 min** or request expires; agent continues with current budget |
+
+## Real portfolio
+
+With Kite token active, the agent syncs your **real Zerodha holdings** and skips paper CNC buys on symbols you already own.
+
 ## Data policy (non-negotiable)
 
 | Rule | Enforcement |
@@ -41,15 +57,21 @@ python3.11 -m src.auth.kite_auth --auto
 # or paste request_token URL while dashboard is up — /kite/callback on :8080
 ```
 
-Dashboard: http://127.0.0.1:8080 · Health: http://127.0.0.1:8080/health
+Dashboard: http://127.0.0.1:8080/dashboard (public read-only) · Owner: http://127.0.0.1:8080/admin
 
-## GCP + GCS + auto-start (production)
+Set `DASHBOARD_ADMIN_USER` + `DASHBOARD_ADMIN_PASSWORD` in `.env` — public sees everything; only owner can halt, approve budget, or paper-buy.
 
-**One command** (from Mac, after `gcloud auth login`):
+## GCP + GCS + auto-start (production — **no Mac dependency**)
+
+**One command** (from any machine with `gcloud auth login`):
 
 ```bash
+cd "/Users/iamabymini/Coding Projects/Stock Market/zerodha-momo-rl"
 bash scripts/gcp_deploy.sh
 ```
+
+VM runs **24×7** (`ENGINE_24X7=true`): supervisor + engine + dashboard via systemd.
+Mac can be off — agent learns and trades paper on real NSE data in the cloud.
 
 This provisions (idempotent):
 - GCE VM `bharatquant-engine` + **static IP** (asia-south1-a)
@@ -109,4 +131,4 @@ python3.11 -m src.auth.kite_totp      # headless TOTP
 python3.11 -m src.auth.kite_auth --auto
 ```
 
-See `docs/EVOLUTION_LOG.md` in parent `Stock Market/docs/` for architecture.
+See `docs/EVOLUTION_LOG.md` and `docs/SYSTEM_TRACKER.md` for architecture and milestone tracking.

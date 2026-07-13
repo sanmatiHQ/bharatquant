@@ -49,22 +49,90 @@ class LiveBroker:
         amount = ltp * qty
         if amount > self.cfg.max_rupees_per_trade:
             qty = max(1, int(self.cfg.max_rupees_per_trade // ltp))
+        sym = signal.symbol.replace("NSE:", "").replace("NFO:", "")
+        exchange = self._exchange(signal)
+        txn = self._transaction(signal.action)
+        product = self._product(signal.rail)
+        use_limit = os.getenv("LIMIT_CHASE_ENABLED", "false").lower() in ("1", "true", "yes")
         try:
+            if use_limit:
+                import asyncio
+
+                from .limit_chase import place_limit_with_chase
+
+                oid = asyncio.get_event_loop().run_until_complete(
+                    place_limit_with_chase(
+                        self._kite,
+                        exchange=exchange,
+                        tradingsymbol=sym,
+                        transaction_type=txn,
+                        quantity=qty,
+                        target_price=ltp,
+                        product=product,
+                        tag=signal.strategy_id,
+                    )
+                )
+            else:
+                oid = self._kite.place_order(
+                    variety=self._kite.VARIETY_REGULAR,
+                    exchange=exchange,
+                    tradingsymbol=sym,
+                    transaction_type=txn,
+                    quantity=qty,
+                    product=product,
+                    order_type=self._kite.ORDER_TYPE_MARKET,
+                    validity=self._kite.VALIDITY_DAY,
+                    tag=signal.strategy_id[:20],
+                )
+            if not oid:
+                return None
+            logger.info("order_placed", extra={"order_id": oid, "symbol": signal.symbol, "qty": qty, "limit": use_limit})
+            return str(oid)
+        except Exception:
+            logger.exception("order_failed", extra={"symbol": signal.symbol})
+            return None
+
+    async def place_async(self, signal: Signal, ltp: float, qty: int) -> Optional[str]:
+        """Async entry for limit chase from execution engine event loop."""
+        if qty <= 0 or ltp <= 0:
+            return None
+        if not self._ops_limiter.allow():
+            return None
+        if ltp * qty > self.cfg.max_rupees_per_trade:
+            qty = max(1, int(self.cfg.max_rupees_per_trade // ltp))
+        sym = signal.symbol.replace("NSE:", "").replace("NFO:", "")
+        exchange = self._exchange(signal)
+        txn = self._transaction(signal.action)
+        product = self._product(signal.rail)
+        use_limit = os.getenv("LIMIT_CHASE_ENABLED", "false").lower() in ("1", "true", "yes")
+        try:
+            if use_limit:
+                from .limit_chase import place_limit_with_chase
+
+                return await place_limit_with_chase(
+                    self._kite,
+                    exchange=exchange,
+                    tradingsymbol=sym,
+                    transaction_type=txn,
+                    quantity=qty,
+                    target_price=ltp,
+                    product=product,
+                    tag=signal.strategy_id,
+                )
             oid = self._kite.place_order(
                 variety=self._kite.VARIETY_REGULAR,
-                exchange=self._exchange(signal),
-                tradingsymbol=signal.symbol.replace("NSE:", "").replace("NFO:", ""),
-                transaction_type=self._transaction(signal.action),
+                exchange=exchange,
+                tradingsymbol=sym,
+                transaction_type=txn,
                 quantity=qty,
-                product=self._product(signal.rail),
+                product=product,
                 order_type=self._kite.ORDER_TYPE_MARKET,
                 validity=self._kite.VALIDITY_DAY,
                 tag=signal.strategy_id[:20],
             )
-            logger.info("order_placed", extra={"order_id": oid, "symbol": signal.symbol, "qty": qty})
-            return str(oid)
+            return str(oid) if oid else None
         except Exception:
-            logger.exception("order_failed", extra={"symbol": signal.symbol})
+            logger.exception("order_failed_async", extra={"symbol": signal.symbol})
             return None
 
 

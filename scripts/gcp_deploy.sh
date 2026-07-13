@@ -19,6 +19,16 @@ if ! gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -1
   exit 1
 fi
 
+SSH_OPTS=(--tunnel-through-iap)
+if ! gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" "${SSH_OPTS[@]}" --command "echo ok" &>/dev/null 2>&1; then
+  echo "WARN: IAP SSH unavailable — using direct SSH"
+  SSH_OPTS=()
+fi
+
+_ssh() {
+  gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" "${SSH_OPTS[@]}" "$@"
+}
+
 echo "==> [1/5] Provision VM + static IP + GCS (idempotent)"
 bash "$ROOT/scripts/gcp_auth_check.sh"
 bash "$ROOT/scripts/gcp_provision.sh"
@@ -28,7 +38,7 @@ source "$STATE_FILE"
 
 echo "==> [2/5] Wait for VM SSH"
 for i in $(seq 1 30); do
-  if gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" --command "echo ok" &>/dev/null; then
+  if _ssh --command "echo ok" &>/dev/null; then
     break
   fi
   echo "  waiting... ($i/30)"
@@ -36,8 +46,7 @@ for i in $(seq 1 30); do
 done
 
 echo "==> [3/5] Rsync repo to VM (excludes secrets + db)"
-gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" --command \
-  "sudo mkdir -p /opt/bharatquant && sudo chown \$(whoami):\$(whoami) /opt/bharatquant"
+_ssh --command "sudo mkdir -p /opt/bharatquant && sudo chown \$(whoami):\$(whoami) /opt/bharatquant"
 
 tar czf - -C "$ROOT" \
   --exclude='.git' \
@@ -54,15 +63,14 @@ tar czf - -C "$ROOT" \
   --exclude='.venv' \
   --exclude='.gcp_state.env' \
   . | \
-  gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" --command \
-  "mkdir -p '$REMOTE_DIR' && tar xzf - -C '$REMOTE_DIR'"
+  _ssh --command "sudo mkdir -p '$REMOTE_DIR' && sudo tar xzf - -C '$REMOTE_DIR' --overwrite && sudo chown -R bharatquant:bharatquant '$REMOTE_DIR'"
 
 echo "==> [4/5] Sync secrets"
+export GCP_USE_IAP_SSH="${#SSH_OPTS[@]}"
 bash "$ROOT/scripts/gcp_sync_secrets.sh"
 
 echo "==> [5/5] VM bootstrap + start supervisor"
-gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" --command \
-  "sudo bash '$REMOTE_DIR/scripts/vm_bootstrap.sh'"
+_ssh --command "sudo bash '$REMOTE_DIR/scripts/vm_bootstrap.sh'"
 
 STATIC_IP="${GCP_STATIC_IP:-}"
 echo ""
@@ -71,5 +79,5 @@ echo "Dashboard:  http://${STATIC_IP}:8080/dashboard"
 echo "Health:     http://${STATIC_IP}:8080/health"
 echo "Kite IP whitelist: ${STATIC_IP}"
 echo "Kite redirect:     http://${STATIC_IP}:8080/kite/callback"
-echo "SSH: gcloud compute ssh $VM_NAME --zone=$ZONE --project=$PROJECT"
-echo "Logs: gcloud compute ssh $VM_NAME --zone=$ZONE --command 'sudo journalctl -u bharatquant-supervisor -f'"
+echo "SSH: gcloud compute ssh $VM_NAME --zone=$ZONE --project=$PROJECT --tunnel-through-iap"
+echo "Logs: gcloud compute ssh $VM_NAME --zone=$ZONE --tunnel-through-iap --command 'sudo journalctl -u bharatquant-supervisor -f'"

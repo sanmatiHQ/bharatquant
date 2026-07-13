@@ -4,7 +4,9 @@ Momentum screener — real Kite OHLC only. Fails loud if token or history missin
 from __future__ import annotations
 
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -61,11 +63,37 @@ class MomentumScreener:
             end=end.isoformat(),
             interval="day",
         )
-        if df is None or df.empty or len(df) < 200:
+        if df is None or df.empty or len(df) < int(os.getenv("SCREEN_MIN_HISTORY_ROWS", "90")):
             raise DataUnavailableError(
                 f"Insufficient OHLC for {symbol}: got {0 if df is None else len(df)} rows"
             )
         return df
+
+    def _screen_symbol(self, sym: str) -> tuple[Optional[dict], bool]:
+        """Returns (row dict or None, is_error)."""
+        try:
+            token = self.instruments.token_for(sym)
+            hist = self._historical(token, sym)
+            feats = self.fs.compute_features(hist)
+            score = self._score(feats)
+            if score < self.cfg.min_score:
+                return None, False
+            clean = sym.replace("NSE:", "")
+            return (
+                {
+                    "symbol": clean,
+                    "score": score,
+                    "r1m": feats["r1m"],
+                    "r3m": feats["r3m"],
+                    "rsi": feats["rsi"],
+                    "ma_align": feats["ma_align"],
+                    "last_close": float(hist["close"].iloc[-1]),
+                },
+                False,
+            )
+        except (KeyError, DataUnavailableError) as exc:
+            self.logger.warning("screen_skip", extra={"symbol": sym, "error": str(exc)})
+            return None, True
 
     def run(self) -> pd.DataFrame:
         self.instruments.ensure_cache(
@@ -73,35 +101,28 @@ class MomentumScreener:
             universe_csv=self.cfg.universe_csv,
         )
         syms = self.instruments.load_universe(self.cfg.universe_csv)
-        self.logger.info("screen_start", extra={"universe_size": len(syms)})
-        rows = []
+        workers = int(os.getenv("SCREEN_PARALLEL_WORKERS", "10"))
+        self.logger.info("screen_start", extra={"universe_size": len(syms), "workers": workers})
+        rows: list[dict] = []
         errors = 0
-        for i, sym in enumerate(syms, 1):
-            if i % 100 == 0:
-                self.logger.info("screen_progress", extra={"done": i, "total": len(syms), "hits": len(rows)})
-            try:
-                token = self.instruments.token_for(sym)
-                hist = self._historical(token, sym)
-                feats = self.fs.compute_features(hist)
-                score = self._score(feats)
-                if score < self.cfg.min_score:
-                    continue
-                clean = sym.replace("NSE:", "")
-                rows.append(
-                    {
-                        "symbol": clean,
-                        "score": score,
-                        "r1m": feats["r1m"],
-                        "r3m": feats["r3m"],
-                        "rsi": feats["rsi"],
-                        "ma_align": feats["ma_align"],
-                        "last_close": float(hist["close"].iloc[-1]),
-                    }
-                )
-            except (KeyError, DataUnavailableError) as exc:
-                errors += 1
-                self.logger.warning("screen_skip", extra={"symbol": sym, "error": str(exc)})
-            time.sleep(0.35)
+        done = 0
+        lock = threading.Lock()
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(self._screen_symbol, sym): sym for sym in syms}
+            for fut in as_completed(futures):
+                done += 1
+                if done % 100 == 0:
+                    self.logger.info(
+                        "screen_progress",
+                        extra={"done": done, "total": len(syms), "hits": len(rows)},
+                    )
+                row, is_err = fut.result()
+                with lock:
+                    if row:
+                        rows.append(row)
+                    if is_err:
+                        errors += 1
 
         if not rows and errors == len(syms):
             raise DataUnavailableError(

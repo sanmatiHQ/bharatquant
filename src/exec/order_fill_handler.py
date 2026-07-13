@@ -1,4 +1,4 @@
-"""ORDER_FILL reconciliation — sync broker fills to SQLite."""
+"""ORDER_FILL reconciliation — sync broker fills to SQLite + settle pending orders."""
 from __future__ import annotations
 
 import logging
@@ -6,6 +6,8 @@ import time
 
 from ..db.database import DB
 from ..events.types import EventType, MarketEvent
+from ..exec.pending_orders import settle_pending_fill
+from ..costs.cost_engine import CostEngine
 
 logger = logging.getLogger("bharatquant.order_fill")
 
@@ -21,6 +23,12 @@ async def on_order_fill(db: DB, event: MarketEvent) -> None:
     status = str(p.get("status", "COMPLETE")).upper()
     if status not in ("COMPLETE", "FILLED") or fill_px <= 0 or qty <= 0:
         return
+
+    costs = CostEngine(slippage_bps=int(__import__("os").getenv("SLIPPAGE_BPS", "4")))
+    if settle_pending_fill(db, order_id=order_id, fill_price=fill_px, qty=qty, costs=costs):
+        logger.info("pending_fill_settled", extra={"order_id": order_id, "price": fill_px})
+        return
+
     row = db._conn.execute(
         "SELECT id, price, qty FROM trades WHERE order_id=? ORDER BY id DESC LIMIT 1",
         (order_id,),

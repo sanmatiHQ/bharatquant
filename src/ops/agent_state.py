@@ -30,6 +30,11 @@ def persist_context(db: DB, ctx: Any) -> None:
         "dii_net_cr": getattr(ctx, "dii_net_cr", 0),
         "gift_nifty_change_pct": getattr(ctx, "gift_nifty_change_pct", 0),
         "india_vix": getattr(ctx, "india_vix", 0),
+        "llm_bias": getattr(ctx, "llm_bias", 0),
+        "futures_oi_chg": getattr(ctx, "futures_oi_chg", 0),
+        "us_vix_chg": getattr(ctx, "us_vix_chg", 0),
+        "nikkei_chg": getattr(ctx, "nikkei_chg", 0),
+        "hang_seng_chg": getattr(ctx, "hang_seng_chg", 0),
         "updated_ts": int(time.time()),
     }
     _set(db, "agent_context", json.dumps(snap))
@@ -42,6 +47,23 @@ def persist_decision(db: DB, decision: dict) -> None:
 
 def touch_heartbeat(db: DB) -> None:
     _set(db, "engine_heartbeat_ts", str(int(time.time())))
+
+
+def persist_engine_phase(db: DB) -> str:
+    """Label active_trading vs learn_only for dashboard (24×7 observe mode)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(os.getenv("TZ", "Asia/Kolkata"))
+    now = datetime.now(tz)
+    weekday = now.weekday() < 5
+    hour = now.hour + now.minute / 60.0
+    if weekday and 9.25 <= hour <= 15.5:
+        phase = "active_trading"
+    else:
+        phase = "learn_only"
+    _set(db, "engine_phase", phase)
+    return phase
 
 
 def load_agent_status(db: DB) -> dict:
@@ -97,6 +119,8 @@ def load_agent_status(db: DB) -> dict:
         "engine_heartbeat_ts": int(hb) if hb and hb.isdigit() else None,
         "supervisor_state": _get(db, "supervisor_state"),
         "supervisor_reason": _get(db, "supervisor_reason"),
+        "engine_phase": _get(db, "engine_phase") or "unknown",
+        "engine_24x7": os.getenv("ENGINE_24X7", "true").lower() in ("1", "true", "yes"),
         "rl_version": os.getenv("RL_ACTIVE_VERSION", "ppo_v1"),
         "rl_policy_exists": Path(os.getenv("RL_MODEL_DIR", "models/rl")).joinpath(
             os.getenv("RL_ACTIVE_VERSION", "ppo_v1"), "policy.npz"

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Optional
 
 from ..db.database import DB
-from ..rl.reward import RewardConfig, compute_reward, compute_trade_reward
+from ..rl.reward import RewardConfig, compute_reward, compute_skip_reward, compute_trade_reward, reward_config_from_env
 from ..rl.rl_buffer import RLBuffer
 from ..rl.state_encoder import encode_state, index_action
 from ..strategies.base import Signal
@@ -22,39 +23,55 @@ class RLObserver:
         self.db = db
         self.buffer = RLBuffer(db)
         self._last_state: dict[str, list[float]] = {}
-        self._reward_cfg = RewardConfig(drawdown_penalty=float(os.getenv("RL_DRAWDOWN_PENALTY", "0.5")))
+        self._reward_cfg = reward_config_from_env()
 
     def snapshot_before(self, ctx: Any, sig: Signal, score: float = 0.0) -> None:
         if not _ENABLED:
             return
         key = sig.symbol
-        self._last_state[key] = encode_state(ctx, symbol=sig.symbol, confidence=sig.confidence, score=score)
+        self._last_state[key] = encode_state(
+            ctx, symbol=sig.symbol, confidence=sig.confidence, score=score, db=self.db
+        )
 
-    def record_skip(
-        self,
-        ctx: Any,
-        sig: Signal,
-        *,
-        reason: str,
-        executed: bool = False,
-    ) -> None:
+    def _hold_minutes(self, symbol: str) -> float:
+        sym = symbol.replace("NSE:", "")
+        row = self.db._conn.execute(
+            "SELECT open_ts, avg_price, last_price FROM positions WHERE symbol=? AND qty > 0",
+            (sym,),
+        ).fetchone()
+        if not row:
+            return 0.0
+        held = (time.time() - int(row["open_ts"])) / 60.0
+        return held
+
+    def _unrealized_pct(self, symbol: str) -> float:
+        sym = symbol.replace("NSE:", "")
+        row = self.db._conn.execute(
+            "SELECT avg_price, last_price FROM positions WHERE symbol=? AND qty > 0", (sym,)
+        ).fetchone()
+        if not row or float(row["avg_price"]) <= 0:
+            return 0.0
+        return (float(row["last_price"]) - float(row["avg_price"])) / float(row["avg_price"]) * 100.0
+
+    def record_skip(self, ctx: Any, sig: Signal, *, reason: str, executed: bool = False) -> None:
         if not _ENABLED:
             return
         prev = self._last_state.pop(sig.symbol, None)
         if prev is None:
             return
         action = index_action(0)
-        next_state = encode_state(ctx, symbol=sig.symbol, confidence=sig.confidence)
+        next_state = encode_state(ctx, symbol=sig.symbol, confidence=sig.confidence, db=self.db)
+        reward = compute_skip_reward(reason, self._reward_cfg)
         self.buffer.push(
             _RL_VERSION,
             sig.symbol,
             {str(i): v for i, v in enumerate(prev)},
             action,
-            -0.001 if reason else 0.0,
+            reward,
             {str(i): v for i, v in enumerate(next_state)},
             done=False,
         )
-        logger.debug("rl_skip_transition", extra={"symbol": sig.symbol, "reason": reason, "executed": executed})
+        logger.debug("rl_skip_transition", extra={"symbol": sig.symbol, "reason": reason, "reward": reward})
 
     def record_outcome(
         self,
@@ -73,13 +90,27 @@ class RLObserver:
         if prev is None:
             return 0
         action = index_action(1 if sig.action == "BUY" and executed else (2 if sig.action == "SELL" and executed else 0))
+        hold_min = self._hold_minutes(sig.symbol)
+        unreal = self._unrealized_pct(sig.symbol)
         if executed and sig.action == "SELL" and cost_basis > 0:
             reward = compute_trade_reward(realized_pnl, cost_basis, self._reward_cfg)
         elif executed:
-            reward = compute_reward(daily_return, drawdown, self._reward_cfg)
+            reward = compute_reward(
+                daily_return,
+                drawdown,
+                self._reward_cfg,
+                hold_minutes=hold_min,
+                unrealized_pnl_pct=unreal,
+            )
         else:
-            reward = -0.001
-        next_state = encode_state(ctx, symbol=sig.symbol, confidence=sig.confidence)
+            reward = compute_skip_reward("not_executed", self._reward_cfg)
+        next_state = encode_state(
+            ctx,
+            symbol=sig.symbol,
+            confidence=sig.confidence,
+            db=self.db,
+            hold_minutes=hold_min,
+        )
         self.buffer.push(
             _RL_VERSION,
             sig.symbol,

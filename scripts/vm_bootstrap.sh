@@ -20,8 +20,8 @@ id "$BQ_USER" &>/dev/null || useradd -r -m -d /home/"$BQ_USER" -s /bin/bash "$BQ
 mkdir -p /opt/bharatquant /var/lib/bharatquant /var/log/bharatquant /etc/bharatquant
 chown -R "$BQ_USER:$BQ_USER" /opt/bharatquant /var/lib/bharatquant /var/log/bharatquant
 
-if [[ ! -d "$REPO_DIR/.git" ]]; then
-  echo "ERROR: repo not found at $REPO_DIR — deploy must scp/rsync code first"
+if [[ ! -f "$REPO_DIR/src/engine/main.py" ]]; then
+  echo "ERROR: repo not found at $REPO_DIR — deploy must rsync/tar code first"
   exit 1
 fi
 
@@ -59,10 +59,24 @@ systemctl enable bharatquant-supervisor bharatquant-rl-train.timer
 echo "==> App setup (DB, instruments, paper cash)"
 sudo -u "$BQ_USER" bash -lc "set -a && source '$ENV_FILE' && set +a && cd '$REPO_DIR' && python3.11 scripts/setup_local.py" || true
 
+sudo chmod 640 "$ENV_FILE"
+chown root:"$BQ_USER" "$ENV_FILE"
+
 systemctl restart bharatquant-supervisor || systemctl start bharatquant-supervisor
 sleep 3
 systemctl is-active bharatquant-supervisor && echo "supervisor: active" || echo "supervisor: check logs"
 
+if [[ -f "$REPO_DIR/deploy/logrotate-bharatquant.conf" ]]; then
+  echo "==> logrotate"
+  cp "$REPO_DIR/deploy/logrotate-bharatquant.conf" /etc/logrotate.d/bharatquant
+fi
+
+if [[ -x "$REPO_DIR/scripts/setup_https.sh" ]]; then
+  echo "==> TLS (Caddy + Let's Encrypt)"
+  bash "$REPO_DIR/scripts/setup_https.sh" || echo "WARN: HTTPS setup failed — run scripts/setup_https.sh manually"
+fi
+
 echo "==> Bootstrap done"
-echo "Dashboard: http://${META_IP:-127.0.0.1}:8080/dashboard"
-echo "Kite redirect: http://${META_IP:-__IP__}:8080/kite/callback"
+PUBLIC_HOST=$(grep '^BHARATQUANT_PUBLIC_HOST=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo "YOUR-PUBLIC-HOST.sslip.io")
+echo "Dashboard: https://${PUBLIC_HOST}/dashboard"
+echo "Kite redirect: https://${PUBLIC_HOST}/kite/callback"

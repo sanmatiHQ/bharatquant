@@ -24,11 +24,44 @@ from ..data.data_policy import DataIntegrityError, require_positive_price
 from ..strategies.registry import StrategyRegistry
 from ..ops.kill_switch import is_halted, set_halt
 from ..ops.daily_pnl import portfolio_state
+from ..ops.budget_gate import can_deploy, consume_rolled_on_deploy, request_budget_increase
+from ..ops.cost_gate import min_qty_for_cost_edge
+from ..ingest.kite_holdings import real_symbols_held
 from ..ops.agent_state import persist_decision
 from ..rl.rl_observer import RLObserver
 from ..exec.order_fill_handler import paper_fill_event
 
 logger = logging.getLogger("bharatquant.execution")
+
+_STRATEGY_EDGE_PCT: dict[str, float] = {
+    "opening_range": 1.5,
+    "affordable_momentum": 1.2,
+    "fast_snapshot": 1.4,
+    "vwap_reversion": 1.8,
+    "combined_momentum": 2.5,
+    "turtle_breakout": 2.0,
+    "gift_gap": 1.2,
+    "short_term_reversal": 2.0,
+    "pairs_stat_arb": 1.5,
+    "bulk_accumulation": 2.5,
+    "insider_cluster": 2.0,
+    "quality_momentum": 2.0,
+    "macro_confluence": 1.0,
+    "gift_fii_sync": 1.0,
+    "volume_breakout": 1.8,
+    "bollinger_squeeze": 1.6,
+    "dual_momentum_pro": 2.2,
+    "fii_divergence": 1.5,
+    "vwap_volume_confirm": 1.4,
+    "crude_energy_beta": 1.8,
+    "rsi_regime_adaptive": 1.5,
+    "adaptive_alpha": 2.0,
+    "strategy_lab": 1.2,
+    "custom_gap_fade": 1.3,
+    "sector_rotation": 1.8,
+    "options_greeks": 1.5,
+}
+_HEDGE_ETF = "NIFTYBEES"
 
 
 class ExecutionEngine:
@@ -43,6 +76,7 @@ class ExecutionEngine:
         self.max_trade = float(os.getenv("MAX_RUPEES_PER_TRADE", "1000"))
         self.max_loss_inr = float(os.getenv("MAX_DAILY_LOSS_RUPEES", "2000"))
         self._rl = RLObserver(db)
+        self._deploy_lock = asyncio.Lock()
 
     def _portfolio(self) -> dict:
         st = portfolio_state(self.db)
@@ -104,18 +138,50 @@ class ExecutionEngine:
             return 0
         sym = symbol.replace("NSE:", "")
         cash = float(port.get("cash", 0))
+        use_atr = os.getenv("ATR_SIZING_ENABLED", "true").lower() in ("1", "true", "yes")
+        if use_atr:
+            from ..portfolio.atr_sizing import atr_qty_for_symbol
+
+            qty = atr_qty_for_symbol(self.db, sym, ltp, cash, self.max_trade)
+            if qty > 0:
+                return qty
         open_pos = int(port.get("open_positions", 0))
         max_pos = int(os.getenv("MAX_POSITIONS", "8"))
-        slots = max(1, max_pos - open_pos)
+        slots_left = max(1, max_pos - open_pos)
+        target_slot = float(os.getenv("TARGET_RUPEES_PER_SLOT", "2500"))
+        slots_from_cash = max(1, int(cash * 0.92 / target_slot))
+        slots = max(1, min(slots_left, slots_from_cash))
         deployable = cash * 0.92 / slots
-        cap_rupees = min(self.max_trade, deployable)
+        from ..ops.budget_gate import remaining_budget
+
+        cap_rupees = min(self.max_trade, deployable, remaining_budget(self.db))
+        from ..ops.vix_controls import vix_sizing_scale
+
+        vix = float(getattr(self.router.ctx, "india_vix", 0) or 0)
+        cap_rupees *= vix_sizing_scale(vix)
         planned = load_target_qty(self.db, sym)
         if planned is not None and planned > 0:
             cap_rupees = min(cap_rupees, planned * ltp)
-        return max(1, int(cap_rupees // ltp))
+        if cap_rupees < ltp:
+            return 0
+        min_q = min_qty_for_cost_edge(self.costs, ltp, cap_rupees)
+        if min_q <= 0:
+            return 0
+        qty = max(min_q, int(cap_rupees // ltp))
+        return qty if qty * ltp <= cap_rupees + 0.01 else max(0, int(cap_rupees // ltp))
 
     def _can_buy(self, chosen: Signal, sym: str) -> bool:
-        if chosen.strategy_id in ("insider_cluster", "bulk_accumulation", "pairs_stat_arb"):
+        opportunistic = (
+            "insider_cluster",
+            "bulk_accumulation",
+            "pairs_stat_arb",
+            "opening_range",
+            "affordable_momentum",
+            "fast_snapshot",
+            "gift_gap",
+            "vwap_reversion",
+        )
+        if chosen.strategy_id in opportunistic:
             return True
         if chosen.rail.upper() == "MIS":
             return True
@@ -125,20 +191,67 @@ class ExecutionEngine:
             return True
         return False
 
+    def _expected_move_pct(self, sig: Signal) -> float:
+        base = _STRATEGY_EDGE_PCT.get(sig.strategy_id, 1.5)
+        return base * sig.confidence
+
+    async def _paper_option_hedge(self, chosen: Signal, event: MarketEvent) -> bool:
+        """Paper buy protective put when IV strategy fires HEDGE."""
+        from ..exec.paper_options import PaperOptionsBroker
+
+        underlying = chosen.symbol.replace("NSE:", "")
+        row = self.db._conn.execute(
+            """
+            SELECT strike, iv, ltp FROM option_iv
+            WHERE symbol=? AND option_type='PE' ORDER BY ABS(strike - ?) LIMIT 1
+            """,
+            (underlying, event.price or 0),
+        ).fetchone()
+        if not row:
+            logger.info("opt_paper_no_chain", extra={"underlying": underlying})
+            persist_decision(self.db, {
+                "action": "OPT_SKIP",
+                "symbol": underlying,
+                "reason": "no_option_chain_data",
+            })
+            return False
+        qty = 1
+        broker = PaperOptionsBroker()
+        result = broker.buy(
+            self.db,
+            underlying=underlying,
+            strike=float(row["strike"]),
+            option_type="PE",
+            qty=qty,
+            ltp=float(row["ltp"] or 50),
+            expiry="PAPER",
+            reason=chosen.reason,
+        )
+        persist_decision(self.db, {
+            "action": "OPT_BUY",
+            "symbol": result.get("symbol"),
+            "underlying": underlying,
+            "executed": True,
+            "strategy": chosen.strategy_id,
+        })
+        return bool(result.get("ok"))
+
+
     async def _train_after_trade(self) -> None:
         if os.getenv("RL_TRAIN_ON_TRADE", "true").lower() not in ("1", "true", "yes"):
             return
         try:
-            from ..rl.ppo_trainer import train_ppo
             from ..ops.gcs_store import sync_rl_model
+            from ..rl.training_guardrails import guarded_train_and_promote
 
             result = await asyncio.to_thread(
-                train_ppo,
+                guarded_train_and_promote,
                 self.db,
                 os.getenv("RL_MODEL_DIR", "models/rl"),
                 os.getenv("RL_ACTIVE_VERSION", "ppo_v1"),
+                skip_shadow=True,
             )
-            if result.get("status") == "ok":
+            if result.get("promoted") and result.get("train", {}).get("status") == "ok":
                 if self.router._rl_agent:
                     self.router._rl_agent.reload()
                 await asyncio.to_thread(
@@ -153,27 +266,93 @@ class ExecutionEngine:
     async def on_event(self, event: MarketEvent) -> None:
         if is_halted(self.db):
             return
+        if event.symbol and event.price > 0:
+            self.router.ctx.last_ltp[event.symbol] = float(event.price)
         port = self._portfolio()
         if port.get("day_loss_rupees", 0) >= self.max_loss_inr:
             set_halt(self.db, reason="daily_loss_rupees_gate")
             await send_telegram(f"HALT daily loss ₹{port['day_loss_rupees']:.0f}")
             logger.warning("daily_loss_halt", extra={"loss_inr": port["day_loss_rupees"]})
             return
-        signals = await self.registry.dispatch(event, self.router.ctx)
-        if not signals:
-            return
-        chosen = self.router.fuse(signals)
+        signals: list[Signal] = []
+        chosen: Optional[Signal] = None
+        if event.type == EventType.FAST_SNAPSHOT:
+            logger.info(
+                "fast_snapshot_execute",
+                extra={"symbol": event.symbol, "price": event.price, "reason": (event.payload or {}).get("reason")},
+            )
+            pl = event.payload or {}
+            chosen = Signal(
+                pl.get("strategy_id", "fast_snapshot"),
+                event.symbol or "",
+                pl.get("action", "BUY"),
+                pl.get("rail", "MIS"),
+                float(pl.get("confidence", 0.75)),
+                pl.get("reason", "holistic_snapshot"),
+            )
+        else:
+            signals = await self.registry.dispatch(event, self.router.ctx)
+            if not signals:
+                return
+            chosen = self.router.fuse(
+                signals,
+                event_price=float(event.price or 0),
+                event_symbol=event.symbol or "",
+            )
+            if not chosen:
+                for s in signals:
+                    self._record_signal(s, event, False)
+                    self.router.maybe_shadow(s, event.price, False)
+                persist_decision(self.db, {
+                    "action": "PASS",
+                    "reason": "no_fused_signal",
+                    "candidates": len(signals),
+                    "event": str(event.type),
+                })
+                return
         if not chosen:
-            for s in signals:
-                self._record_signal(s, event, False)
-                self.router.maybe_shadow(s, event.price, False)
+            return
+        from ..ops.vix_controls import llm_bearish_veto_threshold
+
+        llm_bias = float(getattr(self.router.ctx, "llm_bias", 0) or 0)
+        if chosen.action == "BUY" and llm_bias <= llm_bearish_veto_threshold():
+            reason = f"llm_bearish_veto bias={llm_bias:+.2f}"
+            logger.info("llm_bearish_veto", extra={"bias": llm_bias, "symbol": chosen.symbol})
+            self._record_signal(chosen, event, False)
+            self._rl.record_skip(self.router.ctx, chosen, reason=reason)
             persist_decision(self.db, {
-                "action": "PASS",
-                "reason": "no_fused_signal",
-                "candidates": len(signals),
-                "event": str(event.type),
+                "action": "VETO",
+                "strategy": chosen.strategy_id,
+                "symbol": chosen.symbol,
+                "signal": chosen.action,
+                "reason": reason,
             })
             return
+        from ..ops.slumber_mode import is_slumbering
+
+        if chosen.action == "BUY" and is_slumbering(self.db):
+            reason = "slumber_mode_active"
+            logger.info("slumber_veto", extra={"symbol": chosen.symbol})
+            self._record_signal(chosen, event, False)
+            self._rl.record_skip(self.router.ctx, chosen, reason=reason)
+            persist_decision(self.db, {
+                "action": "VETO",
+                "strategy": chosen.strategy_id,
+                "symbol": chosen.symbol,
+                "signal": chosen.action,
+                "reason": reason,
+            })
+            return
+        from ..ops.execution_cooldown import can_place_order
+
+        if chosen.action in ("BUY", "SELL"):
+            ok_cd, wait_sec = can_place_order(self.db)
+            if not ok_cd:
+                logger.info("execution_cooldown", extra={"wait_sec": wait_sec, "symbol": chosen.symbol})
+                self._record_signal(chosen, event, False)
+                self._rl.record_skip(self.router.ctx, chosen, reason="execution_cooldown")
+                return
+        sym = chosen.symbol.replace("NSE:", "")
         ok, reason = self.router.risk_veto(chosen, port)
         self._rl.snapshot_before(self.router.ctx, chosen, score=chosen.confidence)
         if not ok and chosen.action == "BUY":
@@ -189,6 +368,21 @@ class ExecutionEngine:
                 "reason": reason,
             })
             return
+        if chosen.action == "HEDGE":
+            opt_paper = os.getenv("OPTIONS_PAPER_ENABLED", "true").lower() in ("1", "true", "yes")
+            if chosen.rail.upper() == "OPT" and opt_paper:
+                executed = await self._paper_option_hedge(chosen, event)
+                self._record_signal(chosen, event, executed)
+                return
+            chosen = Signal(
+                chosen.strategy_id,
+                _HEDGE_ETF,
+                "BUY",
+                "CNC",
+                chosen.confidence,
+                f"{chosen.reason}->defensive_etf",
+                meta=chosen.meta,
+            )
         if chosen.action == "BUY" and not self._can_buy(chosen, chosen.symbol):
             logger.info("allocation_veto", extra={"symbol": chosen.symbol})
             self._record_signal(chosen, event, False)
@@ -198,54 +392,164 @@ class ExecutionEngine:
             self._record_signal(chosen, event, False)
             self._rl.record_skip(self.router.ctx, chosen, reason="asm_gsm")
             return
-        if chosen.action == "HEDGE":
-            self._record_signal(chosen, event, False)
-            return
         try:
             ltp = require_positive_price(event.price, chosen.symbol)
         except DataIntegrityError:
-            logger.error("ltp_missing", extra={"symbol": chosen.symbol})
-            self._record_signal(chosen, event, False)
-            return
+            if chosen.symbol.replace("NSE:", "") == _HEDGE_ETF:
+                row = self.db._conn.execute(
+                    "SELECT ltp FROM tick_log WHERE symbol=? ORDER BY ts DESC LIMIT 1",
+                    (_HEDGE_ETF,),
+                ).fetchone()
+                ltp = float(row["ltp"]) if row else 0.0
+                if ltp <= 0:
+                    logger.error("hedge_etf_ltp_missing")
+                    self._record_signal(chosen, event, False)
+                    return
+            else:
+                logger.error("ltp_missing", extra={"symbol": chosen.symbol})
+                self._record_signal(chosen, event, False)
+                return
         qty = self._qty_for(chosen.symbol, ltp, port)
+        if chosen.action == "BUY" and qty <= 0:
+            cash = float(port.get("cash", 0))
+            from ..ops.budget_gate import remaining_budget
+
+            rem = remaining_budget(self.db)
+            if rem < ltp:
+                reason = f"daily_budget_insufficient ltp=₹{ltp:.0f} remaining=₹{rem:.0f}"
+            elif cash < ltp:
+                reason = f"insufficient_cash ltp=₹{ltp:.0f} cash=₹{cash:.0f}"
+            else:
+                reason = f"affordability_veto ltp=₹{ltp:.0f} deploy_cap=₹{min(self.max_trade, rem):.0f}"
+            logger.info("affordability_veto", extra={"symbol": chosen.symbol, "ltp": ltp, "cash": cash, "reason": reason})
+            self._record_signal(chosen, event, False)
+            self._rl.record_skip(self.router.ctx, chosen, reason=reason)
+            persist_decision(self.db, {
+                "action": "VETO",
+                "strategy": chosen.strategy_id,
+                "symbol": chosen.symbol,
+                "signal": chosen.action,
+                "reason": reason,
+            })
+            return
+        if chosen.action == "BUY" and qty > 0:
+            est_cost = qty * ltp
+            ok_budget, budget_reason = can_deploy(self.db, est_cost)
+            if not ok_budget:
+                if "daily_budget_cap" in budget_reason or budget_reason == "budget_exceeded_pending_approval":
+                    from ..ops.budget_gate import approved_daily_max
+
+                    request_budget_increase(
+                        self.db,
+                        approved_daily_max(self.db) + est_cost,
+                        f"{chosen.strategy_id}:{sym} needs ₹{est_cost:.0f}",
+                    )
+                logger.info("budget_veto", extra={"reason": budget_reason, "est": est_cost})
+                self._record_signal(chosen, event, False)
+                self._rl.record_skip(self.router.ctx, chosen, reason=budget_reason)
+                persist_decision(self.db, {
+                    "action": "VETO",
+                    "strategy": chosen.strategy_id,
+                    "symbol": chosen.symbol,
+                    "signal": chosen.action,
+                    "reason": budget_reason,
+                })
+                return
+            held_real = real_symbols_held(self.db)
+            if sym in held_real and chosen.rail.upper() == "CNC":
+                logger.info("real_holdings_skip", extra={"symbol": sym})
+                self._record_signal(chosen, event, False)
+                self._rl.record_skip(self.router.ctx, chosen, reason="already_in_real_portfolio")
+                persist_decision(self.db, {
+                    "action": "VETO",
+                    "strategy": chosen.strategy_id,
+                    "symbol": chosen.symbol,
+                    "signal": chosen.action,
+                    "reason": "already_in_real_portfolio",
+                })
+                return
+            min_move = self.costs.min_profit_move_pct(qty, ltp)
+            expected = self._expected_move_pct(chosen)
+            mis_opportunistic = chosen.rail.upper() == "MIS" and chosen.confidence >= 0.65
+            if expected < min_move and not mis_opportunistic and chosen.confidence < 0.82:
+                logger.info(
+                    "cost_edge_veto",
+                    extra={"symbol": chosen.symbol, "expected": expected, "min_move": min_move},
+                )
+                self._record_signal(chosen, event, False)
+                self._rl.record_skip(self.router.ctx, chosen, reason="cost_edge_too_thin")
+                persist_decision(self.db, {
+                    "action": "VETO",
+                    "strategy": chosen.strategy_id,
+                    "symbol": chosen.symbol,
+                    "signal": chosen.action,
+                    "reason": f"cost_edge expected={expected:.2f}% need={min_move:.2f}%",
+                })
+                return
         ts = int(time.time())
-        sym = chosen.symbol.replace("NSE:", "")
         realized_pnl = 0.0
         cost_basis = 0.0
         if chosen.action == "BUY":
-            cash = float(port.get("cash", 0))
-            ok_m, m_reason = check_margin(
-                symbol=sym,
-                qty=qty,
-                price=ltp,
-                rail=chosen.rail,
-                available_cash=cash,
-                kite=self.live._kite if self.live else None,
-            )
-            if not ok_m:
-                logger.info("margin_veto", extra={"reason": m_reason})
-                self._record_signal(chosen, event, False)
-                self._rl.record_skip(self.router.ctx, chosen, reason=m_reason)
-                return
-            if self.live and os.getenv("TRADING_MODE") == "live":
-                oid = self.live.place(chosen, ltp, qty)
-                executed = oid is not None
-                exec_px = ltp
-                order_id = str(oid) if oid else None
-            else:
-                exec_px = self.paper.buy(chosen.symbol, qty, ltp)
-                executed = True
-                order_id = f"PAPER-B-{ts}"
-            if executed:
-                fees = self.costs.compute_trade_costs(chosen.symbol, qty, exec_px, "BUY", order_id=order_id)
-                cost = exec_px * qty + fees
-                tid = self.db.record_trade(
-                    ts, sym, "BUY", qty, exec_px, cost, chosen.reason, fees, "NA", order_id=order_id
+            async with self._deploy_lock:
+                cash = float(port.get("cash", 0))
+                ok_m, m_reason = check_margin(
+                    symbol=sym,
+                    qty=qty,
+                    price=ltp,
+                    rail=chosen.rail,
+                    available_cash=cash,
+                    kite=self.live._kite if self.live else None,
                 )
-                self.db.add_cash(ts, -cost, f"buy:{sym}")
-                open_lot(self.db, sym, qty, exec_px, ts, chosen.rail, tid)
-                if self._bus_publish and order_id:
-                    await self._bus_publish(paper_fill_event(sym, "BUY", qty, exec_px, order_id))
+                if not ok_m:
+                    logger.info("margin_veto", extra={"reason": m_reason})
+                    self._record_signal(chosen, event, False)
+                    self._rl.record_skip(self.router.ctx, chosen, reason=m_reason)
+                    return
+                if self.live and os.getenv("TRADING_MODE") == "live":
+                    from ..exec.pending_orders import record_pending
+                    from ..exec.broker_sl import place_sl_m
+                    from ..ops.execution_cooldown import mark_order_placed
+
+                    oid = await self.live.place_async(chosen, ltp, qty)
+                    executed = oid is not None
+                    exec_px = ltp
+                    order_id = str(oid) if oid else None
+                    if executed and order_id:
+                        record_pending(
+                            self.db,
+                            order_id=order_id,
+                            symbol=sym,
+                            side="BUY",
+                            qty=qty,
+                            price=ltp,
+                            rail=chosen.rail,
+                            strategy_id=chosen.strategy_id,
+                            reason=chosen.reason,
+                        )
+                        mark_order_placed(self.db)
+                        place_sl_m(self.live._kite, chosen, qty, ltp)
+                else:
+                    exec_px = self.paper.buy(chosen.symbol, qty, ltp)
+                    executed = True
+                    order_id = f"PAPER-B-{ts}"
+                if executed:
+                    if self.live and os.getenv("TRADING_MODE") == "live" and order_id:
+                        pass  # positions updated on ORDER_FILL via settle_pending_fill
+                    else:
+                        fees = self.costs.compute_trade_costs(chosen.symbol, qty, exec_px, "BUY", order_id=order_id)
+                        cost = exec_px * qty + fees
+                        tid = self.db.record_trade(
+                            ts, sym, "BUY", qty, exec_px, cost, chosen.reason, fees, "NA", order_id=order_id
+                        )
+                        self.db.add_cash(ts, -cost, f"buy:{sym}")
+                        consume_rolled_on_deploy(self.db, cost)
+                        open_lot(self.db, sym, qty, exec_px, ts, chosen.rail, tid)
+                        from ..ops.execution_cooldown import mark_order_placed
+
+                        mark_order_placed(self.db)
+                        if self._bus_publish and order_id:
+                            await self._bus_publish(paper_fill_event(sym, "BUY", qty, exec_px, order_id))
+                        await self._train_after_trade()
         elif chosen.action == "SELL":
             cur = self.db._conn.execute("SELECT qty FROM positions WHERE symbol=?", (sym,))
             row = cur.fetchone()
@@ -254,32 +558,54 @@ class ExecutionEngine:
                 return
             qty = int(row["qty"])
             if self.live and os.getenv("TRADING_MODE") == "live":
-                oid = self.live.place(chosen, ltp, qty)
+                from ..exec.pending_orders import record_pending
+                from ..ops.execution_cooldown import mark_order_placed
+
+                oid = await self.live.place_async(chosen, ltp, qty)
                 executed = oid is not None
                 exec_px = ltp
                 order_id = str(oid) if oid else None
+                if executed and order_id:
+                    record_pending(
+                        self.db,
+                        order_id=order_id,
+                        symbol=sym,
+                        side="SELL",
+                        qty=qty,
+                        price=ltp,
+                        rail=chosen.rail,
+                        strategy_id=chosen.strategy_id,
+                        reason=chosen.reason,
+                    )
+                    mark_order_placed(self.db)
             else:
                 exec_px = self.paper.sell(chosen.symbol, qty, ltp)
                 executed = True
                 order_id = f"PAPER-S-{ts}"
             if executed:
-                fees = self.costs.compute_trade_costs(chosen.symbol, qty, exec_px, "SELL", order_id=order_id)
-                pos_row = self.db._conn.execute(
-                    "SELECT qty, avg_price FROM positions WHERE symbol=?", (sym,)
-                ).fetchone()
-                cost_basis = float(pos_row["avg_price"]) * qty if pos_row else exec_px * qty
-                fills, tax_class = close_lots_fifo(self.db, sym, qty, exec_px, ts, self.costs)
-                proceeds = exec_px * qty - fees
-                realized_pnl = sum(f.pnl for f in fills) - fees
-                self.db.record_trade(
-                    ts, sym, "SELL", qty, exec_px, proceeds, chosen.reason, fees, tax_class, order_id=order_id
-                )
-                self.db.add_cash(ts, proceeds, f"sell:{sym}")
-                self._update_strategy_pnl(chosen.strategy_id, realized_pnl)
-                self.router.record_return(realized_pnl / max(1.0, port.get("total_equity", 1)))
-                if self._bus_publish and order_id:
-                    await self._bus_publish(paper_fill_event(sym, "SELL", qty, exec_px, order_id))
-                await self._train_after_trade()
+                if self.live and os.getenv("TRADING_MODE") == "live" and order_id:
+                    pass
+                else:
+                    fees = self.costs.compute_trade_costs(chosen.symbol, qty, exec_px, "SELL", order_id=order_id)
+                    pos_row = self.db._conn.execute(
+                        "SELECT qty, avg_price FROM positions WHERE symbol=?", (sym,)
+                    ).fetchone()
+                    cost_basis = float(pos_row["avg_price"]) * qty if pos_row else exec_px * qty
+                    fills, tax_class = close_lots_fifo(self.db, sym, qty, exec_px, ts, self.costs)
+                    proceeds = exec_px * qty - fees
+                    realized_pnl = sum(f.pnl for f in fills) - fees
+                    self.db.record_trade(
+                        ts, sym, "SELL", qty, exec_px, proceeds, chosen.reason, fees, tax_class, order_id=order_id
+                    )
+                    self.db.add_cash(ts, proceeds, f"sell:{sym}")
+                    self._update_strategy_pnl(chosen.strategy_id, realized_pnl)
+                    self.router.record_return(realized_pnl / max(1.0, port.get("total_equity", 1)))
+                    from ..ops.execution_cooldown import mark_order_placed
+
+                    mark_order_placed(self.db)
+                    if self._bus_publish and order_id:
+                        await self._bus_publish(paper_fill_event(sym, "SELL", qty, exec_px, order_id))
+                    await self._train_after_trade()
         else:
             executed = False
         self._record_signal(chosen, event, executed)

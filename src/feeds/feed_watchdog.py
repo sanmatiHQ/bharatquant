@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Callable, Optional
 
@@ -11,9 +12,9 @@ logger = logging.getLogger("bharatquant.feed_watchdog")
 
 
 class FeedWatchdog:
-    def __init__(self, publish: Callable, stale_sec: float = 30.0) -> None:
+    def __init__(self, publish: Callable, stale_sec: float | None = None) -> None:
         self.publish = publish
-        self.stale_sec = stale_sec
+        self.stale_sec = stale_sec or float(os.getenv("FEED_STALE_SEC", "5"))
         self._last_tick_ts: float = time.monotonic()
         self._reconnect_cb: Optional[Callable[[], None]] = None
 

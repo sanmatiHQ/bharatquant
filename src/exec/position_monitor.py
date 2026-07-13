@@ -18,6 +18,12 @@ class PositionMonitor:
         self.publish = publish
         self.risk = risk or RiskEngine(risk_config_from_env())
         self._peak_price: Dict[str, float] = {}
+        self._india_vix: float = 0.0
+
+    def refresh_vix(self) -> None:
+        from ..ops.vix_controls import vix_from_db
+
+        self._india_vix = vix_from_db(self.db)
 
     async def on_tick(self, event: MarketEvent) -> None:
         sym = event.symbol
@@ -47,7 +53,7 @@ class PositionMonitor:
             "peak_price": peak,
             "rail": str(row["rail"] or "CNC"),
         }
-        should_exit, reason = self.risk.should_exit(state, peak_price=peak)
+        should_exit, reason = self.risk.should_exit(state, peak_price=peak, india_vix=self._india_vix)
         if not should_exit:
             return
 

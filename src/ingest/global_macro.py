@@ -1,4 +1,4 @@
-"""Global macro poll — US futures, crude, USDINR for regime."""
+"""Global macro poll — US futures, crude, USDINR, India VIX (multi-source)."""
 from __future__ import annotations
 
 import logging
@@ -6,60 +6,43 @@ from typing import Callable
 
 from ..data.provenance import tag_payload
 from ..events.types import EventType, MarketEvent
+from .market_feed_client import fetch_global_macro_bundle
 
 logger = logging.getLogger("bharatquant.ingest.macro")
 
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
+MACRO_SOURCE = "kite+nse+yahoo_chart"
 
 
-SYMBOLS = {
-    "us_sp": "ES=F",
-    "crude": "CL=F",
-    "usd_inr": "USDINR=X",
-    "india_vix": "^INDIAVIX",
-}
-MACRO_SOURCE = "yfinance_macro_signal"
-
-
-def _fetch_macro() -> dict[str, float]:
-    if yf is None:
-        raise RuntimeError("yfinance not installed")
-    out: dict[str, float] = {}
-    for k, sym in SYMBOLS.items():
-        h = yf.Ticker(sym).history(period="5d", interval="1d")
-        if h is None or len(h) < 2:
-            continue
-        c0, c1 = float(h["Close"].iloc[-2]), float(h["Close"].iloc[-1])
-        out[k] = (c1 - c0) / c0 * 100.0 if c0 else 0.0
-    if not out:
-        raise RuntimeError("macro fetch empty")
-    return out
-
-
-async def poll_global_macro(publish: Callable, interval_sec: float = 300.0) -> None:
+async def poll_global_macro(publish: Callable, interval_sec: float = 300.0, db=None) -> None:
     import asyncio
+
+    from ..data.provenance import record_ingest
 
     while True:
         try:
-            data = _fetch_macro()
-            payload = tag_payload(data, source=MACRO_SOURCE, execution_allowed=False)
+            data = fetch_global_macro_bundle()
+            payload = tag_payload({**data, "source": MACRO_SOURCE}, source=MACRO_SOURCE, execution_allowed=False)
             await publish(
-                MarketEvent(type=EventType.GIFT_SESSION_CHANGE, payload=payload)
+                MarketEvent(type=EventType.GIFT_SESSION_CHANGE, symbol="MACRO", payload=payload)
             )
-            if "india_vix" in data:
-                await publish(
-                    MarketEvent(
-                        type=EventType.IV_UPDATE,
-                        payload=tag_payload(
-                            {"vix": abs(data["india_vix"]), "india_vix": abs(data["india_vix"])},
-                            source=MACRO_SOURCE,
-                            execution_allowed=False,
-                        ),
+            if db is not None:
+                with db.tx() as conn:
+                    record_ingest(
+                        conn,
+                        source=MACRO_SOURCE,
+                        event_type=EventType.GIFT_SESSION_CHANGE,
+                        payload=payload,
+                        execution_allowed=False,
                     )
+            vix = float(data.get("india_vix", 0))
+            if vix > 0:
+                iv_payload = tag_payload(
+                    {"vix": vix, "india_vix": vix},
+                    source=MACRO_SOURCE,
+                    execution_allowed=False,
                 )
+                await publish(MarketEvent(type=EventType.IV_UPDATE, symbol="INDIA VIX", payload=iv_payload))
+            logger.info("macro_published", extra={k: round(v, 2) if isinstance(v, float) else v for k, v in data.items() if k != "fetched_ts"})
         except Exception:
             logger.exception("macro_poll_error")
         await asyncio.sleep(interval_sec)

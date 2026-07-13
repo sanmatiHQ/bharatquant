@@ -1,0 +1,5 @@
+# Auto-TLS via Let's Encrypt. Hostname must resolve to this VM (sslip.io needs no DNS edit).
+# Redirect URL for Kite: https://YOUR-PUBLIC-HOST.sslip.io/kite/callback
+YOUR-PUBLIC-HOST.sslip.io {
+	reverse_proxy 127.0.0.1:8080
+}

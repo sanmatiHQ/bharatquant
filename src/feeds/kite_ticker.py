@@ -66,8 +66,13 @@ class KiteTickFeed:
         tokens = list(self._token_to_symbol.keys())
         if tokens:
             ws.subscribe(tokens)
-            ws.set_mode(ws.MODE_QUOTE, tokens)
-        logger.info("kite_ws_connected", extra={"subscribed": len(tokens)})
+            use_depth = os.getenv("KITE_DEPTH_MODE", "true").lower() in ("1", "true", "yes")
+            mode = ws.MODE_FULL if use_depth else ws.MODE_QUOTE
+            ws.set_mode(mode, tokens)
+        logger.info(
+            "kite_ws_connected",
+            extra={"subscribed": len(tokens), "depth": os.getenv("KITE_DEPTH_MODE", "true")},
+        )
 
     def start(self, token_symbol_map: dict[int, str]) -> None:
         self._token_to_symbol = token_symbol_map

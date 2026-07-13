@@ -1,12 +1,15 @@
 """
-Market-activity supervisor — starts/stops engine on GIFT/NSE signals (not trading cron).
+Market-activity supervisor — keeps engine + dashboard running 24×7 in learn mode.
 
-Lifecycle:
-  DORMANT → ARMING (GIFT tick / Pre-Open / FII update) → ACTIVE (engine running)
-  → COOLING (NSE Close sustained) → DORMANT
+Lifecycle (ENGINE_24X7 / PAPER_ALWAYS_ON):
+  ACTIVE always — ingest, RL, strategy discovery, heartbeat; trades only in session window.
+
+Legacy (live + ENGINE_24X7=false):
+  DORMANT → ARMING → ACTIVE → COOLING → DORMANT
 
 Run: python3.11 -m src.ops.market_supervisor
 GCP: systemd bharatquant-supervisor.service (always on)
+macOS: scripts/install_launch_agent.sh
 """
 from __future__ import annotations
 
@@ -74,14 +77,23 @@ def _recent_fii_activity(db: DB, max_age_sec: int = 86400) -> bool:
     return int(time.time()) - int(row["ts"]) < max_age_sec
 
 
+def is_24x7_enabled() -> bool:
+    """Never stop engine/dashboard — observe and learn around the clock."""
+    if os.getenv("ENGINE_24X7", "true").lower() in ("1", "true", "yes"):
+        return True
+    if os.getenv("PAPER_ALWAYS_ON", "true").lower() in ("1", "true", "yes"):
+        if os.getenv("TRADING_MODE", "paper") == "paper":
+            return True
+    return False
+
+
 def evaluate_market_activity(db: DB, nse_status: str) -> tuple[bool, str]:
     """
     Return (should_run_engine, reason).
     Event-driven arming — not a fixed 9:20 cron.
     """
-    if os.getenv("PAPER_ALWAYS_ON", "true").lower() in ("1", "true", "yes"):
-        if os.getenv("TRADING_MODE", "paper") == "paper":
-            return True, "paper_always_on"
+    if is_24x7_enabled():
+        return True, "24x7_learn"
 
     now = _now_ist()
     hour = now.hour + now.minute / 60.0
@@ -137,7 +149,9 @@ def _pid_running(pid_file: Path, expect_module: str = "") -> bool:
         return False
 
 
-def _engine_stale(db: DB, max_age_sec: int = 120) -> bool:
+def _engine_stale(db: DB, max_age_sec: int | None = None) -> bool:
+    if max_age_sec is None:
+        max_age_sec = int(os.getenv("ENGINE_HEARTBEAT_MAX_SEC", "90"))
     row = db._conn.execute("SELECT v FROM settings WHERE k='engine_heartbeat_ts'").fetchone()
     if not row or not str(row["v"]).isdigit():
         return True
@@ -155,9 +169,17 @@ def _ensure_engine_running(db: DB) -> None:
     _start_process("src.engine.main", PID_FILE)
 
 
+def _ensure_dashboard_running() -> None:
+    """Dashboard must stay up 24×7 — supervisor restarts it if crashed."""
+    if not _pid_running(DASH_PID_FILE, "src.api.dashboard"):
+        logger.warning("dashboard_down", extra={"action": "restart"})
+        _start_process("src.api.dashboard", DASH_PID_FILE)
+
+
 def _start_process(module: str, pid_file: Path) -> None:
     if _pid_running(pid_file):
         return
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
     root = Path(__file__).resolve().parents[2]
     log_dir = Path(os.getenv("LOGS_DIR", "logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -197,11 +219,13 @@ def start_engine_stack() -> None:
 
 
 def stop_engine_stack() -> None:
+    if is_24x7_enabled():
+        logger.info("stop_skipped_24x7", extra={"mode": "learn_only"})
+        return
     if os.getenv("SUPERVISOR_USE_SYSTEMD", "").lower() in ("1", "true", "yes"):
         subprocess.run(["sudo", "systemctl", "stop", "bharatquant-engine"], check=False)
         return
     _stop_process(PID_FILE)
-    _stop_process(DASH_PID_FILE)
 
 
 def _persist_state(db: DB, state: str, reason: str) -> None:
@@ -236,7 +260,12 @@ async def run_supervisor() -> None:
     asyncio.create_task(poll_fii_dii(noop_publish, interval_sec=300.0, db=db))
 
     running = _pid_running(PID_FILE)
-    logger.info("supervisor_started", extra={"engine_running": running})
+    logger.info(
+        "supervisor_started",
+        extra={"engine_running": running, "24x7": is_24x7_enabled()},
+    )
+    if is_24x7_enabled():
+        start_engine_stack()
 
     while True:
         try:
@@ -255,6 +284,7 @@ async def run_supervisor() -> None:
 
         if should_run and not is_running:
             start_engine_stack()
+            _ensure_dashboard_running()
             _persist_state(db, "ACTIVE", reason)
             logger.info("engine_armed", extra={"reason": reason, "nse": nse})
         elif should_run and is_running:
@@ -264,6 +294,7 @@ async def run_supervisor() -> None:
                 _start_process("src.engine.main", PID_FILE)
             else:
                 _ensure_engine_running(db)
+            _ensure_dashboard_running()
             _persist_state(db, "ACTIVE", reason)
         elif not should_run and is_running:
             stop_engine_stack()
@@ -272,6 +303,12 @@ async def run_supervisor() -> None:
         else:
             state = "ACTIVE" if is_running else "DORMANT"
             _persist_state(db, state, reason)
+
+        if is_24x7_enabled():
+            _ensure_dashboard_running()
+            if not _pid_running(PID_FILE, "src.engine.main"):
+                start_engine_stack()
+                _persist_state(db, "ACTIVE", "24x7_recover")
 
         await asyncio.sleep(interval)
 
