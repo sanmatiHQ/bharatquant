@@ -32,8 +32,16 @@ def build_sandbox_review(db: DB) -> dict:
     live = model_dir / "policy.npz"
 
     comparison = None
+    stable_eval = None
+    candidate_eval = None
     if stable.exists() and live.exists():
         comparison = compare_policies(db, stable, live)
+        stable_eval = comparison.get("stable")
+        candidate_eval = comparison.get("candidate")
+    elif stable.exists():
+        stable_eval = evaluate_policy_on_bars(db, stable)
+    elif live.exists():
+        candidate_eval = evaluate_policy_on_bars(db, live)
 
     rl_meta = _setting(db, "rl_last_train_meta")
     slippage = _setting(db, "slippage_summary_latest")
@@ -52,9 +60,6 @@ def build_sandbox_review(db: DB) -> dict:
         """
     ).fetchall()
     history_days = [dict(r) for r in rows]
-
-    stable_eval = evaluate_policy_on_bars(db, stable) if stable.exists() else None
-    candidate_eval = evaluate_policy_on_bars(db, live) if live.exists() else None
 
     promote_recommendation = "hold_stable"
     if comparison:

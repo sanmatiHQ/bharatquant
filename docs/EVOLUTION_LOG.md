@@ -651,6 +651,13 @@ Files: `training_guardrails.py`, `shadow_backtest.py`; `SESSION_CLOSE` uses `gua
 
 ### Docs
 - `docs/SYSTEM_TRACKER.md` Layer 11 (BQ-D1..D12) marked deployed/verified
-- Git: pushed to `sanmatiHQ/bharatquant` main
+- Git: pushed to `sanmatiHQ/bharatquant` main (`e6c0c36`)
+
+### Deploy proof (2026-07-13 ~19:30 IST)
+- `gcp_deploy.sh` → VM `bharatquant-engine` @ `YOUR.STATIC.IP`, supervisor **active**
+- `GET https://YOUR-PUBLIC-HOST.sslip.io/health` → `status: ok`, `kite_token: true`
+- OpenAPI **47 routes** after dashboard recycle (SSE `/api/feed/stream`, `/api/agent/sandbox`, `/api/slumber`)
+- **Ops note:** dashboard uvicorn can survive supervisor restart — `vm_bootstrap.sh` now `pkill` stale dashboard before restart
+- **Perf fix:** sandbox API deduped shadow eval (no triple `evaluate_policy_on_bars`)
 
 ---

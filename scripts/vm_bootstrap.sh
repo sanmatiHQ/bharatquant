@@ -62,6 +62,10 @@ sudo -u "$BQ_USER" bash -lc "set -a && source '$ENV_FILE' && set +a && cd '$REPO
 sudo chmod 640 "$ENV_FILE"
 chown root:"$BQ_USER" "$ENV_FILE"
 
+# Dashboard is a child process — kill stale uvicorn so deploy picks up new routes
+pkill -f 'python3.11 -m src.api.dashboard' 2>/dev/null || true
+rm -f /var/log/bharatquant/dashboard.pid 2>/dev/null || true
+
 systemctl restart bharatquant-supervisor || systemctl start bharatquant-supervisor
 sleep 3
 systemctl is-active bharatquant-supervisor && echo "supervisor: active" || echo "supervisor: check logs"
