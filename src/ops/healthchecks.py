@@ -11,9 +11,14 @@ from pathlib import Path
 
 import httpx
 
+_token_cache: dict[str, object] = {"ts": 0.0, "ok": False}
+
 
 def check_token(*, live: bool = True) -> bool:
     """Return True only if access token exists and validates against Kite REST."""
+    now = time.time()
+    if live and now - float(_token_cache["ts"]) < 60:
+        return bool(_token_cache["ok"])
     path = os.getenv("KITE_ACCESS_TOKEN_FILE", ".kite_token.json")
     try:
         with open(path, encoding="utf-8") as f:
@@ -22,6 +27,8 @@ def check_token(*, live: bool = True) -> bool:
         if not token and isinstance(data.get("data"), dict):
             token = data["data"].get("access_token")
         if not token:
+            if live:
+                _token_cache.update({"ts": now, "ok": False})
             return False
         if not live:
             return True
@@ -31,10 +38,14 @@ def check_token(*, live: bool = True) -> bool:
         r = httpx.get(
             "https://api.kite.trade/user/profile",
             headers={"X-Kite-Version": "3", "Authorization": f"token {api_key}:{token}"},
-            timeout=10,
+            timeout=2.0,
         )
-        return r.status_code == 200
+        ok = r.status_code == 200
+        _token_cache.update({"ts": now, "ok": ok})
+        return ok
     except (FileNotFoundError, json.JSONDecodeError, httpx.HTTPError):
+        if live:
+            _token_cache.update({"ts": now, "ok": False})
         return False
 
 
