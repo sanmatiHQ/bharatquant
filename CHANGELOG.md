@@ -41,6 +41,12 @@
 - Production hostnames / project IDs replaced with placeholders in tracked files
 - `deploy/Caddyfile` gitignored — use `deploy/Caddyfile.example` + `setup_https.sh`
 
+## 2026-07-13 — Open source completion
+
+- `CONTRIBUTING.md`, `SECURITY.md`, `.github/` CI + templates
+- Full `.env.example`, `scrub_git_history.sh`, `test_open_source_hygiene.py`
+- SYSTEM_TRACKER Layer 12 (BQ-OS1..OS8)
+
 ## 2026-07-13 — 24×7 agent (observe + learn always on)
 
 ### Supervisor

@@ -662,4 +662,13 @@ Files: `training_guardrails.py`, `shadow_backtest.py`; `SESSION_CLOSE` uses `gua
 - GCP project defaults → `your-gcp-project-id` placeholders in scripts/docs
 - Repo visibility: **public** on GitHub
 
+## 2026-07-13 — Open source completion (full)
+
+- `CONTRIBUTING.md`, `SECURITY.md`, GitHub issue/PR templates
+- `.github/workflows/ci.yml` — pytest + `audit_secrets.sh` on every PR
+- Full `.env.example` parity with `deploy/bharatquant.env.production`
+- `scripts/scrub_git_history.sh` — removes infra fingerprints from all commits
+- `tests/test_open_source_hygiene.py` — CI regression for OSS gates
+- `docs/SYSTEM_TRACKER.md` Layer 12 (BQ-OS1..OS8) marked deployed
+
 ---

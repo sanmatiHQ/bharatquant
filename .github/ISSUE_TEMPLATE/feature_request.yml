@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest an improvement or new capability
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What business or research problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - engine / execution
+        - RL / learning
+        - dashboard
+        - screening / data
+        - deploy / ops
+        - docs
+    validations:
+      required: true
+  - type: checkboxes
+    id: policy
+    attributes:
+      label: Data policy
+      options:
+        - label: Proposal keeps Kite-only execution prices (no fake OHLC)
+          required: true
+        - label: Proposal does not require committing secrets or personal trade data
+          required: true

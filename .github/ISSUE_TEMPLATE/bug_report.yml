@@ -1,0 +1,50 @@
+name: Bug report
+description: Something broken — engine, dashboard, deploy, tests
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste API keys, tokens, or `.env` contents.**
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ... 2. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - paper
+        - live
+        - local only
+        - GCP VM
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (redact secrets)
+  - type: checkboxes
+    id: audit
+    attributes:
+      label: Checklist
+      options:
+        - label: I ran `bash scripts/audit_secrets.sh` and did not commit secrets
+          required: true

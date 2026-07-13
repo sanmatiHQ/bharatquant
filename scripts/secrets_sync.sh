@@ -2,7 +2,7 @@
 # Pull secrets from GCP Secret Manager into /etc/bharatquant/env
 # Usage: GCP_PROJECT=bharatquant-prod bash scripts/secrets_sync.sh
 set -euo pipefail
-PROJECT="${GCP_PROJECT:-bharatquant-prod}"
+PROJECT="${GCP_PROJECT:-your-gcp-project-id}"
 OUT="/etc/bharatquant/env"
 sudo mkdir -p /etc/bharatquant
 sudo touch "$OUT"

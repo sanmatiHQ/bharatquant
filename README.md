@@ -2,110 +2,159 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/sanmatiHQ/bharatquant/actions/workflows/ci.yml/badge.svg)](https://github.com/sanmatiHQ/bharatquant/actions/workflows/ci.yml)
 
 **Event-driven NSE agent** — Kite Connect execution, paper→live gate, RL guardrails, telemetry dashboard.
 
-> **Not financial advice.** This software is for research and education. Trading involves risk of loss. You are responsible for compliance with SEBI, exchange, and broker rules. Run paper mode first.
-
-## Open source
-
-- **License:** [Apache 2.0](LICENSE)
-- **Issues & PRs:** [github.com/sanmatiHQ/bharatquant](https://github.com/sanmatiHQ/bharatquant)
-- **Contributing:** fork → branch → tests green → PR with a short problem/solution note
-- **Security:** never commit `.env`, Kite tokens, or DB files — run `bash scripts/audit_secrets.sh` before pushing
-
-### What is **not** in this repo (by design)
-
-| Never committed | Where it lives |
-|-----------------|----------------|
-| Kite API key/secret, password, TOTP | Your `.env` (copy from `.env.example`) |
-| Access tokens | `.kite_token.json` (local / VM only) |
-| SQLite trades & PnL | `data/trading.db` or VM `/var/lib/bharatquant/` |
-| RL model weights | `models/rl/` (optional GCS sync) |
-| GCP deploy state | `.gcp_state.env` |
-| Generated TLS config | `deploy/Caddyfile` (use `deploy/Caddyfile.example`) |
-
-If this repo was ever private with real secrets in local-only files, **rotate Kite and dashboard passwords** before going public.
+> **Not financial advice.** Research and education only. Trading involves risk of loss. You are responsible for SEBI, exchange, and broker compliance. **Run paper mode first.**
 
 ---
 
-## Daily budget (hard cap)
+## Open source
 
-| Rule | Detail |
-|------|--------|
-| Deploy cap | **₹1,500–₹2,000/day** via `DAILY_INVESTMENT_MIN/MAX` (live Zerodha after profitability) |
-| Phase 1 | **paper_learn** — real Kite ticks, paper orders, RL on live market |
-| Phase 2 | **live_deploy** — set `TRADING_MODE=live` after `LIVE_GATE_MIN_PAPER_RETURN_PCT` met |
-| No auto top-up | Paper cash seeds **once** — agent cannot invent money |
-| Raise limit | Agent requests via dashboard → you **Approve** within **15 min** or request expires |
+| Resource | Link |
+|----------|------|
+| Repository | https://github.com/sanmatiHQ/bharatquant |
+| License | [Apache 2.0](LICENSE) |
+| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Security | [SECURITY.md](SECURITY.md) |
+| Changelog | [CHANGELOG.md](CHANGELOG.md) |
+| Architecture tracker | [docs/SYSTEM_TRACKER.md](docs/SYSTEM_TRACKER.md) |
+| Design log | [docs/EVOLUTION_LOG.md](docs/EVOLUTION_LOG.md) |
 
-## Data policy (non-negotiable)
+### Community workflow
 
-| Rule | Enforcement |
-|------|-------------|
-| Execution prices | Kite LTP / WebSocket TICK only |
-| Screening OHLC | Kite `historical()` only — `DataUnavailableError` if missing |
-| No fallback LTP | Missing price → skip trade + log error |
-| GIFT signal | `yfinance` proxy tagged `SIGNAL_ONLY` — never used for order price |
-| Tests only | `tests/mock_feed.py` — never imported in production paths |
+1. Fork → branch → implement
+2. `bash scripts/audit_secrets.sh` + `python3.11 -m pytest tests/ -q`
+3. Open PR using the template — describe problem, verification, data-policy compliance
+
+### What is **never** in git
+
+| Artifact | Where it lives |
+|----------|----------------|
+| Kite API key/secret, password, TOTP | Your `.env` only |
+| Access tokens | `.kite_token.json` (gitignored) |
+| Trade DB / PnL | `data/trading.db` or VM `/var/lib/bharatquant/` |
+| RL weights | `models/rl/` (gitignored) |
+| GCP deploy state | `.gcp_state.env` (gitignored) |
+| Live TLS host | `deploy/Caddyfile` (generated on VM; see `deploy/Caddyfile.example`) |
+
+**Operators:** if this repo was ever private on your machine, rotate Kite API secret and dashboard password after going public.
+
+---
+
+## Architecture (high level)
+
+```
+Kite WebSocket TICK ──► EventBus ──► Strategies ──► ExecutionEngine
+                              │              │
+                              ▼              ▼
+                         Bar aggregator   Risk / Budget / VIX gates
+                              │
+                              ▼
+                    SQLite (trades, positions, RL transitions)
+                              │
+         ┌────────────────────┼────────────────────┐
+         ▼                    ▼                    ▼
+   RL guardrails      Dashboard (SSE)        GCS backup (optional)
+   shadow backtest    telemetry + XAI
+```
+
+**Phases:** `paper_learn` (default) → profitability gate → `TRADING_MODE=live` with hard daily caps.
+
+---
 
 ## Quick start (local)
 
 ```bash
 git clone https://github.com/sanmatiHQ/bharatquant.git
 cd bharatquant
-cp .env.example .env   # fill KITE_API_KEY, KITE_API_SECRET, etc.
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env    # fill KITE_API_KEY, KITE_API_SECRET, dashboard password
 set -a && source .env && set +a
 
 python3.11 scripts/setup_local.py
 bash src/ops/start_system.sh
 ```
 
-Dashboard: http://127.0.0.1:8080/dashboard
+- Dashboard: http://127.0.0.1:8080/dashboard (public read-only)
+- Owner actions: http://127.0.0.1:8080/admin
 
-**Kite login** (token expired):
+**Kite token refresh:**
 
 ```bash
 python3.11 -m src.auth.kite_auth --auto
 ```
 
+---
+
 ## GCP deploy (optional)
 
 ```bash
-# Set GCP_PROJECT_ID, Kite creds, dashboard password in .env first
+# Fill .env: GCP_PROJECT_ID, Kite creds, DASHBOARD_ADMIN_PASSWORD, BHARATQUANT_PUBLIC_HOST
 bash scripts/gcp_deploy.sh
 ```
 
-- Provisions GCE VM + static IP + GCS bucket (idempotent)
-- Secrets pushed from **your** `.env` only — never from git
-- Kite console: whitelist VM static IP; redirect `https://YOUR_HOST/kite/callback`
+| Step | What it does |
+|------|----------------|
+| `gcp_provision.sh` | VM + static IP + GCS bucket |
+| `gcp_sync_secrets.sh` | Push `.env` secrets to VM only |
+| `vm_bootstrap.sh` | systemd supervisor + deps |
 
-See `deploy/bharatquant.env.production` for non-secret production defaults (placeholders only).
+**Kite developer console:** whitelist VM static IP; redirect `https://YOUR_HOST/kite/callback`
 
-## Architecture docs
+Non-secret production defaults: `deploy/bharatquant.env.production` (placeholders only).
 
-- `docs/EVOLUTION_LOG.md` — design decisions & ops notes (sanitized)
-- `docs/SYSTEM_TRACKER.md` — milestone tracker
-- `CHANGELOG.md` — release history
+---
 
-## RL / PPO
+## Daily budget & data policy
 
-Observer records transitions on every agent decision. Guarded training with shadow backtest before weight promotion:
+| Rule | Detail |
+|------|--------|
+| Deploy cap | ₹1,500–₹2,000/day (`DAILY_INVESTMENT_MIN/MAX`) after live gate |
+| Paper phase | Real Kite ticks, paper orders, RL on live market |
+| Execution prices | Kite LTP / WebSocket only — no synthetic OHLC |
+| Screening | Kite `historical()` or `DataUnavailableError` |
+| GIFT / macro | Signal tags only — never order price |
+
+---
+
+## RL / guardrails
+
+- Observer records every decision transition
+- **Guarded promote:** low LR → 30d shadow backtest → revert on regression
+- Post-market train at 16:15 IST (`POSTMARKET_RL_DEFER=true`)
 
 ```bash
 python3.11 -m src.rl.rl_trainer --version ppo_v1 --epochs 4
 ```
 
-## Tests
+---
+
+## Quality gates
 
 ```bash
-python3.11 -m pytest tests/ -q
-bash scripts/audit_secrets.sh
+bash scripts/audit_secrets.sh     # secrets + infra fingerprint scan
+python3.11 -m pytest tests/ -q    # full test suite
 ```
+
+CI runs both on every push/PR to `main`.
+
+### One-time git history scrub (maintainers)
+
+If old commits contain your GCP project ID or VM IP:
+
+```bash
+bash scripts/scrub_git_history.sh
+git push origin main --force-with-lease
+```
+
+---
 
 ## Reporting security issues
 
-Open a **private** GitHub security advisory on the repo, or email the maintainer listed on the GitHub org. Do **not** post API keys or account IDs in public issues.
+Use [GitHub Security Advisories](https://github.com/sanmatiHQ/bharatquant/security/advisories/new) — **not** public issues. See [SECURITY.md](SECURITY.md).
 
 ---
 
