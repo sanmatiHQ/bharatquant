@@ -4,14 +4,14 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..db.database import DB
-from ..rl.shadow_backtest import compare_policies, evaluate_policy_on_bars
+from ..rl.shadow_backtest import compare_policies
 
 _TZ = ZoneInfo(os.getenv("TZ", "Asia/Kolkata"))
+_CACHE_KEY = "sandbox_review_cache"
 
 
 def _setting(db: DB, key: str) -> dict | None:
@@ -24,29 +24,28 @@ def _setting(db: DB, key: str) -> dict | None:
         return {"raw": row["v"]}
 
 
-def build_sandbox_review(db: DB) -> dict:
-    """Dashboard sandbox tab — RL shadow gate + optional date replay metrics."""
+def build_sandbox_review(db: DB, *, recompute: bool = False) -> dict:
+    """Dashboard sandbox tab — uses post-market shadow cache; optional live recompute."""
     version = os.getenv("RL_ACTIVE_VERSION", "ppo_v1")
     model_dir = Path(os.getenv("RL_MODEL_DIR", "models/rl")) / version
     stable = model_dir / "policy_stable.npz"
     live = model_dir / "policy.npz"
 
-    comparison = None
-    stable_eval = None
-    candidate_eval = None
-    if stable.exists() and live.exists():
-        comparison = compare_policies(db, stable, live)
-        stable_eval = comparison.get("stable")
-        candidate_eval = comparison.get("candidate")
-    elif stable.exists():
-        stable_eval = evaluate_policy_on_bars(db, stable)
-    elif live.exists():
-        candidate_eval = evaluate_policy_on_bars(db, live)
-
-    rl_meta = _setting(db, "rl_last_train_meta")
+    rl_meta = _setting(db, "rl_last_train_meta") or {}
     slippage = _setting(db, "slippage_summary_latest")
 
-    # Last 10 session days from portfolio_history (daily close snapshots)
+    cached = _setting(db, _CACHE_KEY)
+    if cached and not recompute and cached.get("rl_version") == version:
+        cached["from_cache"] = True
+        return cached
+
+    comparison = rl_meta.get("shadow")
+    if recompute and stable.exists() and live.exists():
+        comparison = compare_policies(db, stable, live)
+
+    stable_eval = comparison.get("stable") if comparison else None
+    candidate_eval = comparison.get("candidate") if comparison else None
+
     rows = db._conn.execute(
         """
         SELECT date(ts, 'unixepoch', 'localtime') AS day,
@@ -64,8 +63,10 @@ def build_sandbox_review(db: DB) -> dict:
     promote_recommendation = "hold_stable"
     if comparison:
         promote_recommendation = "use_candidate" if comparison.get("passed") else "hold_stable"
+    elif rl_meta.get("promoted"):
+        promote_recommendation = "use_candidate"
 
-    return {
+    payload = {
         "ts": int(time.time()),
         "rl_version": version,
         "promote_recommendation": promote_recommendation,
@@ -76,8 +77,16 @@ def build_sandbox_review(db: DB) -> dict:
         "candidate_eval": candidate_eval,
         "history_days": history_days,
         "lookback_days": int(os.getenv("RL_SHADOW_LOOKBACK_DAYS", "30")),
+        "from_cache": False,
         "note": (
-            "Candidate promoted only if shadow score within tolerance vs stable. "
-            "Use history_days to pick dates for manual GCS bar replay."
+            "Shadow scores refresh at 16:15 post-market (or per-trade RL). "
+            "Pass ?recompute=1 to force live bar replay."
         ),
     }
+
+    with db.tx() as conn:
+        conn.execute(
+            "INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            (_CACHE_KEY, json.dumps(payload)),
+        )
+    return payload

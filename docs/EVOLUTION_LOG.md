@@ -659,5 +659,6 @@ Files: `training_guardrails.py`, `shadow_backtest.py`; `SESSION_CLOSE` uses `gua
 - OpenAPI **47 routes** after dashboard recycle (SSE `/api/feed/stream`, `/api/agent/sandbox`, `/api/slumber`)
 - **Ops note:** dashboard uvicorn can survive supervisor restart — `vm_bootstrap.sh` now `pkill` stale dashboard before restart
 - **Perf fix:** sandbox API deduped shadow eval (no triple `evaluate_policy_on_bars`)
+- **Perf fix (38edd6d+):** sandbox reads `rl_last_train_meta.shadow` cache — no live 30d replay on dashboard GET
 
 ---

@@ -485,10 +485,10 @@ def create_app() -> FastAPI:
         return halt_status(db)
 
     @app.get("/api/agent/sandbox")
-    def agent_sandbox():
+    def agent_sandbox(recompute: bool = False):
         from ..intelligence.sandbox_review import build_sandbox_review
 
-        return build_sandbox_review(db)
+        return build_sandbox_review(db, recompute=recompute)
 
     @app.get("/api/agent/learning")
     def agent_learning():
