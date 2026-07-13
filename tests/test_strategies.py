@@ -49,7 +49,7 @@ async def test_stop_loss_guard():
 def test_registry_loads_all():
     reg = StrategyRegistry()
     assert len(reg._strategies) == strategy_count()
-    assert strategy_count() == 31
+    assert strategy_count() == 52
 
 
 @pytest.mark.asyncio
@@ -151,6 +151,123 @@ async def test_custom_rule_strategy():
             symbol="INFY",
             price=1500,
             payload={"r3m": 0.02, "vol_ratio": 2.0, "rsi": 48},
+        ),
+        ctx,
+    )
+    assert sig and sig.action == "BUY"
+
+
+@pytest.mark.asyncio
+async def test_connors_ibs_buy():
+    from src.strategies.literature_strategies import ConnorsIBSStrategy
+
+    s = ConnorsIBSStrategy()
+    ctx = MarketContext(regime="NEUTRAL")
+    sig = await s.on_event(
+        MarketEvent(
+            type=EventType.BAR_CLOSE_5M,
+            symbol="ITC",
+            price=420,
+            payload={"ibs": 0.15, "rsi": 32},
+        ),
+        ctx,
+    )
+    assert sig and sig.action == "BUY" and sig.strategy_id == "connors_ibs"
+
+
+@pytest.mark.asyncio
+async def test_momentum_consensus_buy():
+    from src.strategies.literature_strategies import MomentumConsensusStrategy
+
+    s = MomentumConsensusStrategy()
+    ctx = MarketContext(fii_net_cr=100, regime="BULL")
+    sig = await s.on_event(
+        MarketEvent(
+            type=EventType.BAR_CLOSE_5M,
+            symbol="INFY",
+            price=1500,
+            payload={"r3m": 0.008, "rsi": 55, "vol_ratio": 1.5, "ema_cross_up": 1},
+        ),
+        ctx,
+    )
+    assert sig and sig.action == "BUY"
+
+
+@pytest.mark.asyncio
+async def test_nifty_buy_the_dip():
+    from src.strategies.nse_localized import NiftyBuyTheDipStrategy
+
+    s = NiftyBuyTheDipStrategy()
+    ctx = MarketContext(regime="NEUTRAL")
+    sig = await s.on_event(
+        MarketEvent(
+            type=EventType.BAR_CLOSE_1D,
+            symbol="NIFTYBEES",
+            price=250,
+            payload={"ret_5d": -0.02},
+        ),
+        ctx,
+    )
+    assert sig and sig.action == "BUY" and sig.strategy_id == "nifty_buy_the_dip"
+
+
+@pytest.mark.asyncio
+async def test_us_overnight_follow_gap_up():
+    from src.strategies.nse_localized import UsOvernightFollowStrategy
+
+    s = UsOvernightFollowStrategy()
+    ctx = MarketContext(regime="RISK_ON", gift_nifty_change_pct=0.4)
+    sig = await s.on_event(
+        MarketEvent(type=EventType.SESSION_OPEN, symbol="NIFTYBEES", price=250),
+        ctx,
+    )
+    assert sig and sig.action == "BUY"
+
+
+@pytest.mark.asyncio
+async def test_ath_breakout_india():
+    from src.strategies.nse_localized import AthBreakoutIndiaStrategy
+
+    s = AthBreakoutIndiaStrategy()
+    ctx = MarketContext(regime="BULL")
+    sig = await s.on_event(
+        MarketEvent(
+            type=EventType.BAR_CLOSE_5M,
+            symbol="INFY",
+            price=1500,
+            payload={"near_high_20": 1, "r3m": 0.005, "vol_ratio": 1.5},
+        ),
+        ctx,
+    )
+    assert sig and sig.action == "BUY"
+
+
+@pytest.mark.asyncio
+async def test_market_session_expiry_thursday():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from src.strategies.market_session import is_monthly_expiry_day
+
+    # Last Thursday Jan 2026 = 29 Jan
+    dt = datetime(2026, 1, 29, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert is_monthly_expiry_day(dt)
+    dt2 = datetime(2026, 1, 22, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert not is_monthly_expiry_day(dt2)
+
+
+@pytest.mark.asyncio
+async def test_turtle_breakout_with_donchian():
+    from src.strategies.turtle_breakout import TurtleBreakoutStrategy
+
+    s = TurtleBreakoutStrategy()
+    ctx = MarketContext()
+    sig = await s.on_event(
+        MarketEvent(
+            type=EventType.BAR_CLOSE_5M,
+            symbol="RELIANCE",
+            price=2850,
+            payload={"high_20": 2800, "low_20": 2700, "close": 2850},
         ),
         ctx,
     )

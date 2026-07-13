@@ -93,10 +93,21 @@ async def _start_pollers(bus: EventBus, logger, db: DB, symbols: list[str]) -> L
         asyncio.create_task(poll_delivery(publish, db=db)),
         asyncio.create_task(poll_corp_rss(publish, db=db)),
         asyncio.create_task(poll_option_iv(publish, db=db)),
-        asyncio.create_task(poll_screener_loop(publish, symbols[:30], db=db)),
-        asyncio.create_task(poll_token_health(publish)),
-        asyncio.create_task(_poll_asm_gsm(db, logger)),
     ]
+    from ..ingest.nse_shareholding import poll_shareholding
+
+    tasks.extend(
+        [
+            asyncio.create_task(poll_shareholding(publish, db=db)),
+        ]
+    )
+    tasks.extend(
+        [
+            asyncio.create_task(poll_screener_loop(publish, symbols[:30], db=db)),
+            asyncio.create_task(poll_token_health(publish)),
+            asyncio.create_task(_poll_asm_gsm(db, logger)),
+        ]
+    )
     from ..ingest.kite_holdings import poll_kite_holdings
     from ..intelligence.strategy_discovery import discovery_loop
 
@@ -111,7 +122,18 @@ async def _start_pollers(bus: EventBus, logger, db: DB, symbols: list[str]) -> L
 
     tasks.append(asyncio.create_task(poll_llm_macro(publish, db)))
     tasks.append(asyncio.create_task(poll_futures_oi(publish, db)))
-    tasks.append(asyncio.create_task(run_reconciliation_loop(db)))
+    from ..ingest.nse_corporate_calendar import poll_corporate_calendar
+    from ..ingest.nse_participant_oi import poll_participant_oi
+    from ..ingest.bse_announcements import poll_bse_announcements
+
+    tasks.extend(
+        [
+            asyncio.create_task(poll_corporate_calendar(publish, db=db)),
+            asyncio.create_task(poll_participant_oi(publish, db=db)),
+            asyncio.create_task(poll_bse_announcements(publish, db=db)),
+        ]
+    )
+    tasks.append(asyncio.create_task(run_reconciliation_loop(db, publish=publish)))
     tasks.append(asyncio.create_task(run_margin_monitor_loop(db)))
     tasks.append(asyncio.create_task(run_mis_squareoff_loop(db, publish)))
     logger.info("pollers_started", extra={"count": len(tasks)})
@@ -201,6 +223,10 @@ async def main() -> None:
     logger = get_logger("engine", logs_dir=logs_dir)
     bus = EventBus()
     db = DB(DBConfig(sqlite_path=os.getenv("SQLITE_PATH", "data/trading.db")))
+    from ..ops.agent_state import touch_heartbeat, persist_engine_phase
+
+    touch_heartbeat(db)
+    persist_engine_phase(db, "BOOT")
     _seed_paper_cash(db, logger)
     from ..ops.trading_phase import assert_live_mode_allowed, evaluate_live_gate
 
@@ -219,6 +245,9 @@ async def main() -> None:
     registry = StrategyRegistry(enabled=enabled, db=db, config=cfg)
     router = AgentRouter(db=db)
     context_updater = ContextUpdater(router.ctx, db=db)
+    from ..market.market_awareness import refresh_market_awareness
+
+    refresh_market_awareness(router.ctx, db)
     seed_calendar_year(db)
     sector_csv = os.getenv("SECTOR_MAP_CSV", "data/sector_map.csv")
     load_sector_map(db, sector_csv)
@@ -435,6 +464,21 @@ async def main() -> None:
             await asyncio.sleep(3600)
 
     bandit_task = asyncio.create_task(refresh_bandit())
+
+    async def strategy_learn_loop() -> None:
+        from ..intelligence.strategy_learning import refresh_all_learning
+
+        while True:
+            try:
+                meta = refresh_all_learning(db, ctx)
+                for sid, w in bandit.update_weights().items():
+                    router.set_weight(sid, w)
+                logger.info("strategy_learn_cycle", extra=meta)
+            except Exception:
+                logger.exception("strategy_learn_error")
+            await asyncio.sleep(1800)
+
+    learn_task = asyncio.create_task(strategy_learn_loop())
     recorder_task = asyncio.create_task(recorder_flush_loop())
     watchdog_task = asyncio.create_task(watchdog.run_loop())
 
@@ -457,8 +501,12 @@ async def main() -> None:
     heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     from ..ops.market_routines import market_routines_loop
+    from ..market.market_awareness import market_clock_loop
 
-    routines_task = asyncio.create_task(market_routines_loop(db, router.ctx, rl_agent=router._rl_agent))
+    routines_task = asyncio.create_task(
+        market_routines_loop(db, router.ctx, rl_agent=router._rl_agent, publish=bus.publish)
+    )
+    clock_task = asyncio.create_task(market_clock_loop(router.ctx, db))
     logger.info(
         "engine_started",
         extra={
@@ -480,10 +528,12 @@ async def main() -> None:
         for t in poller_tasks:
             t.cancel()
         bandit_task.cancel()
+        learn_task.cancel()
         recorder_task.cancel()
         watchdog_task.cancel()
         heartbeat_task.cancel()
         routines_task.cancel()
+        clock_task.cancel()
         screen_task.cancel()
         batch_ltp_task.cancel()
         if fast_task:

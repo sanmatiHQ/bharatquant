@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: audit-secrets
+        name: BharatQuant secret hygiene
+        entry: bash scripts/audit_secrets.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: pytest-quick
+        name: pytest (quick)
+        entry: python3.11 -m pytest tests/ -q --tb=line -x
+        language: system
+        pass_filenames: false
+        types: [python]

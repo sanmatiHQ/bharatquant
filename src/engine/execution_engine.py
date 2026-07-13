@@ -62,6 +62,26 @@ _STRATEGY_EDGE_PCT: dict[str, float] = {
     "custom_gap_fade": 1.3,
     "sector_rotation": 1.8,
     "options_greeks": 1.5,
+    "connors_ibs": 1.7,
+    "crabel_nr7": 1.6,
+    "zscore_reversion": 2.0,
+    "momentum_consensus": 2.2,
+    "ema_cross_rsi": 1.5,
+    "liquidity_sweep": 1.8,
+    "turnaround_tuesday": 1.2,
+    "india_power_hour": 1.4,
+    "india_lunch_fade": 1.3,
+    "india_opening_drive": 1.5,
+    "nifty_buy_the_dip": 1.6,
+    "india_dual_rotation": 1.5,
+    "ath_breakout_in": 1.7,
+    "lower_highs_fade": 1.4,
+    "us_overnight_follow": 1.5,
+    "expiry_week_caution": 1.2,
+    "monday_effect_in": 1.2,
+    "calendar_activity": 1.6,
+    "sentiment_regime": 1.5,
+    "signal_combiner": 1.0,
 }
 _HEDGE_ETF = "NIFTYBEES"
 
@@ -327,6 +347,11 @@ class ExecutionEngine:
                     "event": str(event.type),
                 })
                 return
+            for s in signals:
+                if s.strategy_id == chosen.strategy_id and s.symbol == chosen.symbol and s.action == chosen.action:
+                    continue
+                self._record_signal(s, event, False)
+                self.router.maybe_shadow(s, event.price, False)
         if not chosen:
             return
         from ..ops.vix_controls import llm_bearish_veto_threshold

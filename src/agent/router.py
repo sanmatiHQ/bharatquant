@@ -17,6 +17,7 @@ from ..agent.kelly_sizing import rupees_from_kelly
 from ..db.database import DB
 from ..rl.rl_agent import RLAgent
 from ..rl.state_encoder import encode_state
+from .signal_combiner import SignalCombiner
 
 
 class AgentRouter:
@@ -28,6 +29,7 @@ class AgentRouter:
         self._returns: list[float] = []
         self._shadow_mode = os.getenv("SHADOW_MODE", "false").lower() in ("1", "true", "yes")
         self._rl_agent = RLAgent(db=db) if os.getenv("RL_AGENT_ENABLED", "true").lower() in ("1", "true", "yes") else None
+        self._combiner = SignalCombiner()
 
     def set_weight(self, strategy_id: str, w: float) -> None:
         self._weights[strategy_id] = max(0.0, w)
@@ -75,14 +77,24 @@ class AgentRouter:
             if hedges:
                 return self._apply_rl_boost(max(hedges, key=lambda s: s.confidence))
         max_trade = float(os.getenv("MAX_RUPEES_PER_TRADE", "1000"))
-        scored: list[tuple[float, Signal]] = []
+        from ..intelligence.strategy_learning import strategy_weight_multiplier
+
+        learned = getattr(self.ctx, "strategy_learn_weights", {}) or {}
+        pool_signals: list[Signal] = []
         for s in signals:
-            if s.strategy_id not in allowed and not s.strategy_id.startswith("custom_"):
+            if s.strategy_id not in allowed and not s.strategy_id.startswith(("custom_", "learned_")):
                 continue
             if s.action in ("BUY", "SELL", "HEDGE"):
-                w = self._weights.get(s.strategy_id, 1.0)
-                conf = self._adjust_confidence(s)
-                scored.append((conf * w, s))
+                pool_signals.append(s)
+        combined = self._combiner.combine(
+            pool_signals, self.ctx, self._weights, self._adjust_confidence
+        )
+        scored: list[tuple[float, Signal]] = []
+        for s in combined:
+            w = self._weights.get(s.strategy_id, 1.0)
+            conf = s.confidence if s.strategy_id == "signal_combiner" else self._adjust_confidence(s)
+            learn_mult = strategy_weight_multiplier(learned, s.strategy_id)
+            scored.append((conf * w * learn_mult, s))
         if not scored:
             return None
 

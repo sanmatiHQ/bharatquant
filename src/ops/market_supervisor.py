@@ -149,9 +149,21 @@ def _pid_running(pid_file: Path, expect_module: str = "") -> bool:
         return False
 
 
+def _pid_file_age_sec(pid_file: Path) -> float:
+    if not pid_file.exists():
+        return 999999.0
+    try:
+        return time.time() - pid_file.stat().st_mtime
+    except OSError:
+        return 999999.0
+
+
 def _engine_stale(db: DB, max_age_sec: int | None = None) -> bool:
     if max_age_sec is None:
         max_age_sec = int(os.getenv("ENGINE_HEARTBEAT_MAX_SEC", "90"))
+    grace = int(os.getenv("ENGINE_START_GRACE_SEC", "180"))
+    if _pid_file_age_sec(PID_FILE) < grace:
+        return False
     row = db._conn.execute("SELECT v FROM settings WHERE k='engine_heartbeat_ts'").fetchone()
     if not row or not str(row["v"]).isdigit():
         return True
@@ -159,7 +171,23 @@ def _engine_stale(db: DB, max_age_sec: int | None = None) -> bool:
 
 
 def _ensure_engine_running(db: DB) -> None:
-    """Restart engine if PID is zombie, wrong process, or heartbeat stale."""
+    """Restart engine if PID is zombie, wrong process, heartbeat stale, or duplicates exist."""
+    dupes = []
+    try:
+        out = subprocess.check_output(["pgrep", "-f", "/usr/bin/python3.11 -m src.engine.main"], text=True)
+        dupes = [int(x) for x in out.split() if x.strip().isdigit()]
+    except subprocess.CalledProcessError:
+        dupes = []
+    if len(dupes) > 1:
+        logger.warning("engine_duplicate_pids", extra={"pids": dupes, "action": "kill_all"})
+        for pid in dupes:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        PID_FILE.unlink(missing_ok=True)
+        time.sleep(2)
+
     running = _pid_running(PID_FILE, "src.engine.main")
     if running and not _engine_stale(db):
         return

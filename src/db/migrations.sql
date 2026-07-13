@@ -318,3 +318,50 @@ CREATE TABLE IF NOT EXISTS margin_snapshots (
   utilised REAL,
   util_pct REAL
 );
+
+CREATE TABLE IF NOT EXISTS shareholding_snapshots (
+  symbol TEXT NOT NULL,
+  as_of_date TEXT NOT NULL,
+  promoter_pct REAL,
+  fii_pct REAL,
+  dii_pct REAL,
+  mf_pct REAL,
+  public_pct REAL,
+  payload_json TEXT,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (symbol, as_of_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_shareholding_symbol_ts ON shareholding_snapshots(symbol, ts);
+
+CREATE TABLE IF NOT EXISTS corporate_event_outcomes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_ts INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  category TEXT,
+  side TEXT,
+  entity_class TEXT,
+  entry_price REAL,
+  ret_5d REAL,
+  ret_20d REAL,
+  labeled_ts INTEGER,
+  UNIQUE(event_ts, symbol, event_type, category)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_outcomes_symbol ON corporate_event_outcomes(symbol, event_ts);
+
+CREATE TABLE IF NOT EXISTS strategy_signal_outcomes (
+  ledger_ts INTEGER PRIMARY KEY,
+  strategy_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  signal TEXT NOT NULL,
+  confidence REAL,
+  executed INTEGER DEFAULT 0,
+  entry_price REAL,
+  ret_15m REAL,
+  ret_1d REAL,
+  labeled_ts INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_sso_strategy ON strategy_signal_outcomes(strategy_id);

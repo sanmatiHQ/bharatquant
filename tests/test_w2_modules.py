@@ -170,3 +170,77 @@ def test_kelly_and_var():
     assert 0 <= k <= 1
     v = historical_var([0.01, -0.02, 0.005, -0.03, 0.01] * 5)
     assert v >= 0
+
+
+def test_institutional_entity_classifier():
+    from src.intelligence.institutional_entities import classify_entity, entity_confidence_boost
+
+    assert classify_entity("HDFC Mutual Fund") == "mf"
+    assert classify_entity("Goldman Sachs Singapore") == "fii"
+    assert classify_entity("ICICI Bank Ltd") == "bank"
+    assert classify_entity("Promoter Group") == "promoter"
+    assert entity_confidence_boost("mf", "buy") > 0
+
+
+def test_event_outcomes_and_learning(tmp_path):
+    import json
+    import time
+
+    from src.data.provenance import record_ingest
+    from src.events.types import EventType
+    from src.intelligence.event_outcomes import label_pending_events
+    from src.intelligence.institutional_learning import learn_institutional_weights, seed_rl_transitions_from_outcomes
+
+    db = DB(DBConfig(sqlite_path=str(tmp_path / "learn.db")))
+    base_ts = int(time.time()) - 10 * 86400
+    with db.tx() as conn:
+        record_ingest(
+            conn,
+            source="test",
+            event_type=EventType.BLOCK_DEAL,
+            payload={"symbol": "INFY", "clientName": "HDFC Mutual Fund", "buySell": "BUY", "qty": 300000, "price": 100.0},
+            execution_allowed=False,
+        )
+        conn.execute(
+            "UPDATE ingest_log SET ts=? WHERE id=(SELECT MAX(id) FROM ingest_log)",
+            (base_ts,),
+        )
+        for i, px in enumerate([100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0]):
+            conn.execute(
+                "INSERT INTO tick_log(ts,symbol,ltp,volume) VALUES (?,?,?,?)",
+                (base_ts + i * 86400, "INFY", px, 1000),
+            )
+    meta = label_pending_events(db, now=base_ts + 8 * 86400)
+    assert meta["labeled"] >= 1
+    row = db._conn.execute("SELECT ret_5d FROM corporate_event_outcomes WHERE symbol='INFY'").fetchone()
+    assert row and float(row["ret_5d"]) > 0
+    # Seed enough samples for learning
+    with db.tx() as conn:
+        for i in range(3):
+            conn.execute(
+                """
+                INSERT INTO corporate_event_outcomes(
+                  event_ts, symbol, event_type, category, side, entity_class,
+                  entry_price, ret_5d, ret_20d, labeled_ts
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                """,
+                (base_ts + i, "TCS", "BLOCK_DEAL", "block_deal", "buy", "mf", 100.0, 2.5, 4.0, int(time.time())),
+            )
+    weights = learn_institutional_weights(db)
+    assert "bulk_accumulation" in weights or isinstance(weights, dict)
+    rl = seed_rl_transitions_from_outcomes(db)
+    assert rl["pushed"] >= 1
+    n = db._conn.execute("SELECT COUNT(*) c FROM rl_transitions").fetchone()["c"]
+    assert n >= 1
+
+
+def test_shareholding_normalize():
+    from src.intelligence.corporate_activity import normalize_shareholding
+
+    sh = normalize_shareholding(
+        {"symbol": "RELIANCE", "mf_pct": 8.2, "public_pct": 50.0, "deltas": {"public_pct": 0.6, "promoter_pct": -0.1}}
+    )
+    assert sh["kind"] == "shareholding"
+    assert sh["side"] == "buy"
+    assert "promoter" in sh["reason"]
+

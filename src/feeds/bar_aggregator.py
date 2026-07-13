@@ -123,12 +123,38 @@ def shared_tick_ring() -> TickRingBuffer:
     return _SHARED_RING
 
 
+def _ema(prev: float, value: float, period: int) -> float:
+    if prev <= 0:
+        return value
+    k = 2.0 / (period + 1)
+    return value * k + prev * (1.0 - k)
+
+
+def _z_score(closes: list[float]) -> float:
+    if len(closes) < 5:
+        return 0.0
+    import statistics
+
+    tail = closes[-20:]
+    m = statistics.mean(tail)
+    sd = statistics.stdev(tail) if len(tail) >= 2 else 0.0
+    if sd <= 0:
+        return 0.0
+    return (tail[-1] - m) / sd
+
+
 class BarAggregator:
     def __init__(self, publish: Callable) -> None:
         self.publish = publish
         self._bars: Dict[Tuple[str, int], _Bar] = {}
         self._last_vwap_side: Dict[str, str] = {}
         self._close_hist: Dict[str, Deque[float]] = {}
+        self._high_hist: Dict[str, Deque[float]] = {}
+        self._low_hist: Dict[str, Deque[float]] = {}
+        self._range_hist: Dict[str, Deque[float]] = {}
+        self._daily_close_hist: Dict[str, Deque[float]] = {}
+        self._ema_fast: Dict[str, float] = {}
+        self._ema_slow: Dict[str, float] = {}
         self._vol_hist: Dict[str, Deque[float]] = {}
         cap = int(os.getenv("TICK_RING_CAPACITY", "100"))
         self.tick_ring = shared_tick_ring()
@@ -191,12 +217,72 @@ class BarAggregator:
                 )
             self._last_vwap_side[sym] = side
 
+    def _bar_features(self, sym: str, bar: _Bar) -> dict:
+        """Literature-ready features: Donchian, IBS, NR7, z-score, EMA cross, ret_5d."""
+        hist = self._close_hist.setdefault(sym, deque(maxlen=20))
+        high_hist = self._high_hist.setdefault(sym, deque(maxlen=20))
+        low_hist = self._low_hist.setdefault(sym, deque(maxlen=20))
+        range_hist = self._range_hist.setdefault(sym, deque(maxlen=7))
+        hist.append(bar.close)
+        high_hist.append(bar.high)
+        low_hist.append(bar.low)
+        bar_range = max(bar.high - bar.low, 0.0)
+        range_hist.append(bar_range)
+        closes = list(hist)
+        highs = list(high_hist)
+        lows = list(low_hist)
+        ibs = (bar.close - bar.low) / bar_range if bar_range > 0 else 0.5
+        z_score = _z_score(closes)
+        high_20 = max(highs) if highs else bar.high
+        low_20 = min(lows) if lows else bar.low
+        nr7 = len(range_hist) >= 7 and bar_range <= min(range_hist) * 1.001
+        ema9 = _ema(self._ema_fast.get(sym, 0.0), bar.close, 9)
+        ema21 = _ema(self._ema_slow.get(sym, 0.0), bar.close, 21)
+        self._ema_fast[sym] = ema9
+        self._ema_slow[sym] = ema21
+        daily = self._daily_close_hist.get(sym, deque())
+        ret_5d = 0.0
+        if len(daily) >= 6 and daily[-6] > 0:
+            ret_5d = (bar.close - daily[-6]) / daily[-6]
+        lower_high = 0
+        lower_high_streak = 0
+        if len(highs) >= 2 and highs[-1] < highs[-2]:
+            lower_high = 1
+            streak = 1
+            for i in range(len(highs) - 2, 0, -1):
+                if highs[i] < highs[i - 1]:
+                    streak += 1
+                else:
+                    break
+            lower_high_streak = streak
+        near_high_20 = int(high_20 > 0 and bar.close >= high_20 * 0.995)
+        return {
+            "high_20": high_20,
+            "low_20": low_20,
+            "ibs": round(ibs, 4),
+            "z_score": round(z_score, 4),
+            "nr7": int(nr7),
+            "ema9": round(ema9, 4),
+            "ema21": round(ema21, 4),
+            "ema_cross_up": int(ema9 > ema21),
+            "ret_5d": round(ret_5d, 6),
+            "range_pct": round(bar_range / bar.close * 100, 4) if bar.close > 0 else 0.0,
+            "lower_high": lower_high,
+            "lower_high_streak": lower_high_streak,
+            "near_high_20": near_high_20,
+        }
+
     async def _emit_bar(self, sym: str, bar: _Bar, ev_type: EventType) -> None:
         vwap = bar.vwap_num / bar.vwap_den if bar.vwap_den else bar.close
-        hist = self._close_hist.setdefault(sym, deque(maxlen=20))
-        hist.append(bar.close)
-        mom = _momentum_features(hist) if ev_type == EventType.BAR_CLOSE_5M else {}
-        closes = list(hist)
+        if ev_type == EventType.BAR_CLOSE_1D:
+            self._daily_close_hist.setdefault(sym, deque(maxlen=8)).append(bar.close)
+        mom: dict = {}
+        lit: dict = {}
+        closes = list(self._close_hist.get(sym, []))
+        if ev_type == EventType.BAR_CLOSE_5M:
+            lit = self._bar_features(sym, bar)
+            mom = _momentum_features(self._close_hist[sym])
+            closes = list(self._close_hist[sym])
         bb_w = self._bb_width(closes) if ev_type == EventType.BAR_CLOSE_5M else 0.0
         vol_ratio = self._vol_ratio(sym, bar.volume) if ev_type == EventType.BAR_CLOSE_5M else 1.0
         await self.publish(
@@ -214,6 +300,7 @@ class BarAggregator:
                     "bb_width": bb_w,
                     "vol_ratio": vol_ratio,
                     **mom,
+                    **lit,
                 },
             )
         )

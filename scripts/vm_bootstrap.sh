@@ -66,6 +66,10 @@ chown root:"$BQ_USER" "$ENV_FILE"
 pkill -f 'python3.11 -m src.api.dashboard' 2>/dev/null || true
 rm -f /var/log/bharatquant/dashboard.pid 2>/dev/null || true
 
+# Kill duplicate/stale engine workers — supervisor will spawn exactly one
+pkill -f 'python3.11 -m src.engine.main' 2>/dev/null || true
+rm -f /var/log/bharatquant/engine.pid "${REPO_DIR}/logs/engine.pid" 2>/dev/null || true
+
 systemctl restart bharatquant-supervisor || systemctl start bharatquant-supervisor
 sleep 3
 systemctl is-active bharatquant-supervisor && echo "supervisor: active" || echo "supervisor: check logs"

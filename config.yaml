@@ -68,6 +68,27 @@ strategies:
     - strategy_lab
     - sector_rotation
     - options_greeks
+    - bulk_distribution
+    - institutional_flow
+    - connors_ibs
+    - crabel_nr7
+    - zscore_reversion
+    - momentum_consensus
+    - ema_cross_rsi
+    - liquidity_sweep
+    - turnaround_tuesday
+    - india_power_hour
+    - india_lunch_fade
+    - india_opening_drive
+    - nifty_buy_the_dip
+    - india_dual_rotation
+    - ath_breakout_in
+    - lower_highs_fade
+    - us_overnight_follow
+    - expiry_week_caution
+    - monday_effect_in
+    - calendar_activity
+    - sentiment_regime
 
 rl:
   active_version: "ppo_v1"

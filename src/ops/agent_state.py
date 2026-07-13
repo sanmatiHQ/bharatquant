@@ -39,6 +39,14 @@ def persist_context(db: DB, ctx: Any) -> None:
         "recent_corporate": (getattr(ctx, "recent_corporate", None) or [])[:8],
         "dividend_watch": list(getattr(ctx, "dividend_watch", None) or [])[:8],
         "promoter_watch": list(getattr(ctx, "promoter_watch", None) or [])[:8],
+        "session_phase": getattr(ctx, "session_phase", "closed"),
+        "nse_status": getattr(ctx, "nse_status", "Unknown"),
+        "market_open": getattr(ctx, "market_open", False),
+        "ist_date": getattr(ctx, "ist_date", ""),
+        "ist_time": getattr(ctx, "ist_time", ""),
+        "fear_greed_index": getattr(ctx, "fear_greed_index", 50.0),
+        "sentiment_label": getattr(ctx, "sentiment_label", "Neutral"),
+        "recent_headlines": (getattr(ctx, "recent_headlines", None) or [])[:6],
     }
     _set(db, "agent_context", json.dumps(snap))
 

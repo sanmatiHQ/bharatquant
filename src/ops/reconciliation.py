@@ -1,4 +1,4 @@
-"""Broker ↔ internal DB reconciliation with alerts and repair."""
+"""Broker ↔ internal DB reconciliation with alerts, repair, and halt on persistent mismatch."""
 from __future__ import annotations
 
 import asyncio
@@ -10,8 +10,21 @@ from typing import Any
 
 from ..alerts.webhook import send_telegram
 from ..db.database import DB
+from ..events.types import EventType, MarketEvent
+from ..ops.kill_switch import get_setting, set_halt, set_setting
 
 logger = logging.getLogger("bharatquant.reconcile")
+
+_STREAK_KEY = "reconcile_mismatch_streak"
+
+
+def _reconcile_interval_sec() -> float:
+    default = "60" if os.getenv("TRADING_MODE", "paper") == "live" else "300"
+    return float(os.getenv("RECONCILE_INTERVAL_SEC", default))
+
+
+def _halt_after() -> int:
+    return int(os.getenv("RECONCILE_HALT_AFTER", "3"))
 
 
 def _load_kite():
@@ -24,10 +37,36 @@ def _load_kite():
     return k
 
 
+def _track_mismatch_streak(db: DB, mismatches: list, repaired: int) -> dict[str, Any]:
+    """Increment streak on persistent mismatch; halt live trading after N failures."""
+    meta: dict[str, Any] = {"streak": 0, "halted": False}
+    unresolved = max(0, len(mismatches) - repaired)
+    if unresolved > 0:
+        streak = int(get_setting(db, _STREAK_KEY, "0") or 0) + 1
+        set_setting(db, _STREAK_KEY, str(streak))
+        meta["streak"] = streak
+        halt_after = _halt_after()
+        if os.getenv("TRADING_MODE", "paper") == "live" and streak >= halt_after:
+            reason = f"reconcile_unresolved_{streak}x"
+            set_halt(db, reason=reason)
+            meta["halted"] = True
+            meta["halt_reason"] = reason
+            logger.error("reconcile_halt_triggered", extra={"streak": streak, "unresolved": unresolved})
+    else:
+        set_setting(db, _STREAK_KEY, "0")
+    return meta
+
+
 def reconcile_positions(db: DB) -> dict[str, Any]:
     """Compare kite net positions vs internal positions table."""
     if os.getenv("TRADING_MODE", "paper") != "live":
-        return _reconcile_paper_holdings(db)
+        result = _reconcile_paper_holdings(db)
+        if result.get("mismatches", 0) > 0:
+            streak_meta = _track_mismatch_streak(db, result.get("details", []), 0)
+            result.update(streak_meta)
+        else:
+            set_setting(db, _STREAK_KEY, "0")
+        return result
 
     try:
         kite = _load_kite()
@@ -94,10 +133,21 @@ def reconcile_positions(db: DB) -> dict[str, Any]:
             (ts, len(mismatches), json.dumps(mismatches[:20]), repaired),
         )
 
+    streak_meta = _track_mismatch_streak(db, mismatches, repaired)
     if mismatches:
-        logger.warning("reconcile_mismatch", extra={"count": len(mismatches), "repaired": repaired})
+        logger.warning(
+            "reconcile_mismatch",
+            extra={"count": len(mismatches), "repaired": repaired, "streak": streak_meta.get("streak")},
+        )
 
-    return {"ok": True, "mismatches": len(mismatches), "repaired": repaired, "details": mismatches, "alert": len(mismatches) > 0}
+    return {
+        "ok": True,
+        "mismatches": len(mismatches),
+        "repaired": repaired,
+        "details": mismatches,
+        "alert": len(mismatches) > 0,
+        **streak_meta,
+    }
 
 
 def _reconcile_paper_holdings(db: DB) -> dict[str, Any]:
@@ -111,20 +161,31 @@ def _reconcile_paper_holdings(db: DB) -> dict[str, Any]:
         iq = internal_set.get(sym, 0)
         if bq != iq:
             mismatches.append({"symbol": sym, "kite_holdings_qty": bq, "internal_qty": iq})
+    for sym, iq in internal_set.items():
+        if sym not in broker_set:
+            mismatches.append({"symbol": sym, "kite_holdings_qty": 0, "internal_qty": iq})
     return {"ok": True, "mismatches": len(mismatches), "details": mismatches, "mode": "paper"}
 
 
-async def run_reconciliation_loop(db: DB, interval_sec: float | None = None) -> None:
-    sec = interval_sec or float(os.getenv("RECONCILE_INTERVAL_SEC", "300"))
+async def run_reconciliation_loop(db: DB, interval_sec: float | None = None, publish=None) -> None:
+    sec = interval_sec or _reconcile_interval_sec()
     while True:
         try:
             result = reconcile_positions(db)
-            if result.get("alert"):
-                from ..alerts.webhook import send_telegram
-
-                await send_telegram(
-                    f"RECONCILE {result['mismatches']} mismatch(es) repaired={result.get('repaired', 0)}"
-                )
+            if result.get("alert") or result.get("halted"):
+                msg = f"RECONCILE {result['mismatches']} mismatch(es) repaired={result.get('repaired', 0)}"
+                if result.get("streak"):
+                    msg += f" streak={result['streak']}"
+                if result.get("halted"):
+                    msg += f" HALT {result.get('halt_reason')}"
+                await send_telegram(msg)
+                if publish and result.get("halted"):
+                    await publish(
+                        MarketEvent(
+                            type=EventType.RECONCILE_ALERT,
+                            payload={"reason": result.get("halt_reason"), "streak": result.get("streak")},
+                        )
+                    )
         except Exception:
             logger.exception("reconcile_loop_error")
         await asyncio.sleep(sec)

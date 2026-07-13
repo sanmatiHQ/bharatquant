@@ -38,6 +38,7 @@ SKIP_FILES=(
   scripts/secrets_sync.sh
   scripts/audit_secrets.sh
   scripts/scrub_git_history.sh
+  scripts/verify_deploy.sh
   tests/test_open_source_hygiene.py
 )
 

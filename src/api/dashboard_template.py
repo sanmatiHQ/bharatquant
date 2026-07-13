@@ -104,6 +104,7 @@ def render_dashboard(css: str, n_strategies: int) -> str:
     <div class="panel-head">
       <h2>Profit opportunities</h2>
       <span class="badge warn" id="corpBadge">—</span>
+      <span class="badge" id="learnBadge" style="margin-left:0.35rem">learning —</span>
     </div>
     <div id="corpStream" class="corp-stream">
       <div class="empty-state">Loading insider, bulk, dividend filings…</div>
@@ -324,6 +325,9 @@ function renderFeed(f){{
   if(f.gift_pct!=null) chips.push('GIFT '+(f.gift_pct>=0?'+':'')+Number(f.gift_pct).toFixed(2)+'%');
   if(f.llm_bias!=null) chips.push('LLM '+(f.llm_bias>=0?'+':'')+Number(f.llm_bias).toFixed(2));
   if(f.india_vix!=null) chips.push('VIX '+Number(f.india_vix).toFixed(1));
+  if(f.fear_greed_index!=null) chips.push('F&G '+Math.round(f.fear_greed_index)+' '+String(f.sentiment_label||''));
+  if(f.session_phase) chips.push(String(f.session_phase).replace(/_/g,' '));
+  if(f.nse_status) chips.push('NSE '+f.nse_status);
   chips.push('Budget '+Math.round(f.budget_used_pct||0)+'%');
   if(f.rl_strategy_note&&f.rl_strategy_note.strategy_id) chips.push(f.rl_strategy_note.strategy_id);
   $('contextChips').innerHTML=chips.map(c=>'<span class="chip">'+esc(c)+'</span>').join('');
@@ -338,7 +342,13 @@ function renderFeed(f){{
 
   const corp=f.corporate||{{}};
   const cc=corp.counts||{{}};
-  $('corpBadge').textContent=(cc.insider||0)+' ins · '+(cc.bulk||0)+' blk · '+(cc.dividends||0)+' div';
+  $('corpBadge').textContent=(cc.insider||0)+' ins · '+(cc.bulk||0)+' blk · '+(cc.shareholding||0)+' shp · '+(cc.mf_flows||0)+' mf';
+  const il=f.institutional_learning||{{}};
+  if(il.labeled_outcomes!=null){{
+    const lw=il.strategy_weights||{{}};
+    const top=Object.entries(lw).slice(0,2).map(([k,v])=>k+':'+Number(v).toFixed(2)).join(' ');
+    $('learnBadge').textContent=(il.signal_outcomes||0)+' signals · '+(il.labeled_outcomes||0)+' corp · '+(il.promoted_rules||0)+' rules · '+(il.rl_transitions||0)+' RL'+(top?' · '+top:'');
+  }}
   const timeline=corp.timeline||[];
   $('corpStream').innerHTML=timeline.length?timeline.slice(0,10).map(c=>{{
     const tag=c.category||c.kind||'corp';

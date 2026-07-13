@@ -7,14 +7,79 @@ import time
 from typing import Any
 
 from ..db.database import DB
+from .strategy_catalog import DISCOVERY_RULES
 
 logger = logging.getLogger("bharatquant.strategy_discovery")
 
-_RULES = (
-    {"rule_id": "mom_r3m_pos", "field": "r3m", "op": "gt", "threshold": 0.006},
-    {"rule_id": "mom_rsi_os", "field": "rsi", "op": "lt", "threshold": 35},
-    {"rule_id": "vol_spike", "field": "vol_ratio", "op": "gt", "threshold": 2.0},
-)
+
+def _rsi_from_closes(closes: list[float], idx: int, period: int = 14) -> float:
+    if idx < period:
+        return 50.0
+    gains = 0.0
+    losses = 0.0
+    for j in range(idx - period + 1, idx + 1):
+        delta = closes[j] - closes[j - 1]
+        if delta >= 0:
+            gains += delta
+        else:
+            losses -= delta
+    if losses == 0:
+        return 100.0 if gains > 0 else 50.0
+    rs = (gains / period) / (losses / period)
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _bar_features_at(
+    bars: list,
+    closes: list[float],
+    highs: list[float],
+    lows: list[float],
+    vols: list[float],
+    vol_avg: float,
+    idx: int,
+) -> dict[str, float]:
+    c0 = closes[idx]
+    r3m = (c0 - closes[idx - 3]) / closes[idx - 3] if idx >= 3 and closes[idx - 3] else 0.0
+    hi = highs[idx]
+    lo = lows[idx]
+    rng = max(hi - lo, 0.0)
+    ibs = (c0 - lo) / rng if rng > 0 else 0.5
+    tail = closes[max(0, idx - 19) : idx + 1]
+    z_score = 0.0
+    if len(tail) >= 5:
+        m = sum(tail) / len(tail)
+        var = sum((x - m) ** 2 for x in tail) / len(tail)
+        sd = var**0.5
+        z_score = (c0 - m) / sd if sd > 0 else 0.0
+    ranges = [max(highs[j] - lows[j], 0.0) for j in range(max(0, idx - 6), idx + 1)]
+    nr7 = 1.0 if ranges and ranges[-1] <= min(ranges) * 1.001 else 0.0
+    ema9 = sum(closes[max(0, idx - 8) : idx + 1]) / min(9, idx + 1)
+    ema21 = sum(closes[max(0, idx - 20) : idx + 1]) / min(21, idx + 1)
+    high_20 = max(highs[max(0, idx - 19) : idx + 1]) if idx >= 1 else hi
+    donchian_brk = 1.0 if c0 > high_20 * 0.999 else 0.0
+    near_high_20 = 1.0 if high_20 > 0 and c0 >= high_20 * 0.995 else 0.0
+    lower_high_streak = 0.0
+    if idx >= 2 and highs[idx] < highs[idx - 1]:
+        streak = 1
+        for j in range(idx - 1, max(0, idx - 5), -1):
+            if highs[j] < highs[j - 1]:
+                streak += 1
+            else:
+                break
+        lower_high_streak = float(streak)
+    vol_ratio = vols[idx] / vol_avg if vol_avg else 1.0
+    return {
+        "r3m": r3m,
+        "rsi": _rsi_from_closes(closes, idx),
+        "vol_ratio": vol_ratio,
+        "ibs": ibs,
+        "z_score": z_score,
+        "nr7": nr7,
+        "ema_cross_up": 1.0 if ema9 > ema21 else 0.0,
+        "donchian_brk": donchian_brk,
+        "near_high_20": near_high_20,
+        "lower_high_streak": lower_high_streak,
+    }
 
 
 def _forward_return(closes: list[float], idx: int, horizon: int = 3) -> float | None:
@@ -32,7 +97,7 @@ def mine_bar_log(db: DB, lookback_days: int = 14, min_samples: int = 20) -> list
     cutoff = int(time.time()) - lookback_days * 86400
     rows = db._conn.execute(
         """
-        SELECT ts, symbol, close, volume FROM bar_log
+        SELECT ts, symbol, open, high, low, close, volume FROM bar_log
         WHERE interval='5m' AND ts >= ?
         ORDER BY symbol, ts
         """,
@@ -47,18 +112,18 @@ def mine_bar_log(db: DB, lookback_days: int = 14, min_samples: int = 20) -> list
         if len(bars) < 40:
             continue
         closes = [float(b["close"]) for b in bars]
+        highs = [float(b["high"]) for b in bars]
+        lows = [float(b["low"]) for b in bars]
         vols = [float(b["volume"] or 0) for b in bars]
         vol_avg = sum(vols) / len(vols) if vols else 1.0
 
-        for rule in _RULES:
+        for rule in DISCOVERY_RULES:
             hits = 0
             wins = 0
             ret_sum = 0.0
             for i in range(20, len(bars) - 4):
-                r3m = (closes[i] - closes[i - 3]) / closes[i - 3] if closes[i - 3] else 0
-                rsi_proxy = 50.0  # simplified without full RSI on history
-                vol_ratio = vols[i] / vol_avg if vol_avg else 1.0
-                val = {"r3m": r3m, "rsi": rsi_proxy, "vol_ratio": vol_ratio}.get(rule["field"], 0)
+                feats = _bar_features_at(bars, closes, highs, lows, vols, vol_avg, i)
+                val = feats.get(rule["field"], 0)
                 ok = val > rule["threshold"] if rule["op"] == "gt" else val < rule["threshold"]
                 if not ok:
                     continue
@@ -78,7 +143,7 @@ def mine_bar_log(db: DB, lookback_days: int = 14, min_samples: int = 20) -> list
             discoveries.append({
                 "rule_id": f"{rule['rule_id']}_{sym}",
                 "symbol": sym,
-                "conditions": json.dumps(rule),
+                "conditions": json.dumps({**rule, "source": rule.get("source", "mined")}),
                 "win_rate": round(win_rate, 3),
                 "avg_return": round(avg_ret * 100, 3),
                 "sample_count": hits,
@@ -119,6 +184,10 @@ async def discovery_loop(db: DB, interval_sec: float = 3600.0) -> None:
             found = mine_bar_log(db)
             if found:
                 persist_discoveries(db, found)
+                from .strategy_learning import promote_discovery_rules, learn_unified_strategy_weights
+
+                promote_discovery_rules(db)
+                learn_unified_strategy_weights(db)
                 logger.info("strategy_discovery", extra={"count": len(found)})
         except Exception:
             logger.exception("strategy_discovery_error")

@@ -41,11 +41,11 @@ def next_time_today(hh: int, mm: int) -> _dt.datetime:
 
 
 def is_market_open(ts: _dt.datetime | None = None) -> bool:
-    """Return True if within NSE cash market hours (approx 09:15–15:30 IST) Monday–Friday."""
-    ts = ts or now_ist()
-    # Monday=0 ... Sunday=6
-    if ts.weekday() >= 5:
-        return False
-    start = ts.replace(hour=9, minute=15, second=0, microsecond=0)
-    end = ts.replace(hour=15, minute=30, second=0, microsecond=0)
-    return start <= ts <= end
+    """Return True if within NSE cash market hours (09:15–15:30 IST) Monday–Friday."""
+    from ..strategies.market_session import is_nse_open, ist_now
+
+    if ts is None:
+        return is_nse_open()
+    if ts.tzinfo is None:
+        ts = _IST.localize(ts)
+    return is_nse_open(ts)

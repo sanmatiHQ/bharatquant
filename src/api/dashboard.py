@@ -444,13 +444,15 @@ def create_app() -> FastAPI:
         import asyncio
 
         from ..feeds.session_watcher import fetch_nse_status
+        from ..strategies.market_session import market_clock_snapshot
 
         try:
             status = asyncio.run(fetch_nse_status())
         except Exception as exc:
             status = f"unknown ({exc})"
+        snap = market_clock_snapshot(nse_status=status)
         return {
-            "nse_status": status,
+            **snap,
             "ist_note": "Agent screens on SESSION_PRE_OPEN; trades on TICK during market hours",
         }
 

@@ -719,3 +719,162 @@ Applied relevant external architecture recommendations without new top-level fil
 - Post-deploy RL/postmarket may show `Permission denied` on env if sourced wrong user — non-fatal; engine heartbeat can lag after restart → ENGINE DOWN pill while process recovers (data still in SQLite)
 
 ---
+
+## 2026-07-13 — Institutional learning (open data, no LLM)
+
+### Ingest (P0)
+- **`src/ingest/nse_shareholding.py`** — NSE `corporate-share-holdings` per watchlist symbol; `shareholding_snapshots` table; publishes `SHAREHOLDING_UPDATE`
+- **`src/ingest/nse_bulk.py`** — enriches bulk rows with `entity_class` (MF/FII/bank/promoter); MF-sized deals also emit `MF_HOLDING_UPDATE`
+- **`src/intelligence/institutional_entities.py`** — deterministic client-name classifier + static confidence priors
+
+### Learning loop (agent learns from filings)
+- **`corporate_event_outcomes`** — labels insider/bulk/corp/shareholding/MF events with +5d/+20d forward returns from `tick_log`/`bar_log`
+- **`src/intelligence/event_outcomes.py`** — `label_pending_events()` scans `ingest_log`
+- **`src/intelligence/institutional_learning.py`** — aggregates outcomes → `institutional_learn_weights` in settings; merges into bandit; seeds `rl_transitions` from labeled events
+- **Post-market + hourly** — `refresh_context_learning()` in `market_routines` and engine loop; `ctx.institutional_weights` drives `corporate_profit_tilt()` and strategy confidence
+
+### Strategies
+- **`bulk_distribution`** — follow institutional sells (mirror of bulk_accumulation)
+- **`institutional_flow`** — MF/FII shareholding QoQ increases + MF block buys
+
+### Schema
+- `shareholding_snapshots`, `corporate_event_outcomes` in `migrations.sql`
+
+### Proof + live API fix
+- **`scripts/probe_institutional_learning.py`** — synthetic E2E (ingest → label → learn → RL → bandit) + `--live SYMBOL` + `--db` VM readout
+- NSE shareholding endpoint corrected: `corporate-share-holdings` (404) → **`corporate-share-holdings-master?index=equities&symbol=`** (200); parses promoter/public QoQ deltas
+- NSE bulk/block endpoint corrected: `snapshot-capital-market-largedeals` (404) → **`snapshot-capital-market-largedeal?mode=bulk_deals|block_deals`** (200); `BULK_DEALS_DATA` + `BLOCK_DEALS_DATA`
+- Engine heartbeat boot fix: `touch_heartbeat()` at engine start + supervisor 180s start grace — stops 30s restart loop (ENGINE DOWN pill)
+- **VM proof 2026-07-13:** live INFY fetch OK; `shareholding_snapshots=1`, `ingest_log SHAREHOLDING_UPDATE=1`; `rl_transitions=2122` (existing mesh); outcomes label after +7d
+- Dashboard: `institutional_learning` block + `learnBadge` on Profit opportunities panel
+
+---
+
+## 2026-07-13 — Literature strategy expansion (QS + TradingView + 151TS)
+
+### Sources mapped
+- QuantifiedStrategies free library — IBS mean reversion, Turnaround Tuesday, dual momentum
+- TradingView scripts (PROTOS 616, Momentum Consensus, EMA+RSI, liquidity sweep)
+- Kakushadze & Serur, 151 Trading Strategies (SSRN 3247865) — Donchian, NR7, z-score stat-arb
+
+### Bar features (unblocked dead strategies)
+- `bar_aggregator.py` emits: `high_20`, `low_20`, `ibs`, `z_score`, `nr7`, `ema9/21`, `ema_cross_up`, `ret_5d`
+- Fixes `turtle_breakout` + `short_term_reversal` missing payload fields
+
+### New strategies (33 → 40)
+- `literature_strategies.py`: connors_ibs, crabel_nr7, zscore_reversion, momentum_consensus, ema_cross_rsi, liquidity_sweep, turnaround_tuesday
+
+### Learning loop
+- `strategy_catalog.py` — lineage + 10 discovery rules
+- `strategy_discovery.py` — full OHLC feature recompute from bar_log
+
+---
+
+## 2026-07-13 — Unified strategy learning (everything learned by agent)
+
+### Problem
+Literature strategies + discovery rules were firing but not fully learning: bandit only saw executed ledger hits; non-chosen signals discarded; discovery never auto-promoted to runnable rules.
+
+### Solution: `strategy_learning.py` master loop
+Every 30m (engine) + post-market:
+1. Label all signals — `strategy_ledger` + `shadow_trades` → `strategy_signal_outcomes`
+2. Label corporate events — `corporate_event_outcomes`
+3. Promote discovery — top rules → `learned_custom_rules` (auto-loaded by registry)
+4. Unified weights — `strategy_learn_weights` merges outcomes + PnL + institutional
+5. RL seed — corporate + strategy signals → `rl_transitions`
+6. Bandit refresh after each learn cycle
+
+### Execution
+- All candidate signals recorded when fuse picks winner
+- Router applies learned weight multiplier per strategy_id
+
+---
+
+## 2026-07-13 — Priority backlog closed (combiner + ingest + reconcile + AGENTS)
+
+### P0 — Signal combiner
+- `src/agent/signal_combiner.py` — 500ms window, net BUY/SELL per symbol, position guard
+- Wired into `AgentRouter.fuse()` before bandit scoring
+
+### P1 — NSE corporate calendar ingest
+- `nse_corporate_calendar.py` — corporate-actions, board-meetings, event-calendar
+- Event types: `CORPORATE_ACTION`, `BOARD_MEETING`, `EVENT_CALENDAR`
+
+### P1 — Reconciliation hardening
+- Live default interval **60s** (paper 300s) via `RECONCILE_INTERVAL_SEC`
+- Persistent mismatch streak → `set_halt()` after `RECONCILE_HALT_AFTER` (default 3) in live mode
+- Telegram + `RECONCILE_ALERT` event on halt
+
+### P2 — AGENTS.md + pre-commit
+- `AGENTS.md` — edit boundaries, learning invariant, deploy commands
+- `.pre-commit-config.yaml` — audit_secrets + pytest
+
+### P2 — Participant OI
+- `nse_participant_oi.py` — archives CSV `fao_participant_oi_ddmmyyyy.csv`
+- `PARTICIPANT_OI_UPDATE` → retail vs FII divergence on `MarketContext`
+
+### P3 — BSE cross-feed
+- `bse_announcements.py` — BSE `AnnGetData` API
+- `BSE_ANNOUNCEMENT` events → corporate context
+
+---
+
+## 2026-07-13 — US literature strategies localized for NSE/BSE (40 → 50)
+
+**Philosophy:** US-session strategies (QuantifiedStrategies, 151TS) are not discarded — each gets an IST-localized twin; paper-learn proves what works in India.
+
+### Session clock
+- `market_session.py` — NSE phases: opening_drive, lunch, power_hour; monthly expiry (last Thu)
+
+### New strategies (`nse_localized.py`)
+| ID | US origin | India mapping |
+|----|-----------|---------------|
+| `india_power_hour` | Power hour | 14:30–15:30 IST momentum |
+| `india_lunch_fade` | Lunch doldrums | 12:00–13:30 IBS fade |
+| `india_opening_drive` | Opening drive | 09:15–09:45 thrust |
+| `nifty_buy_the_dip` | SPY buy dip | NIFTYBEES ret_5d < -1.5% |
+| `india_dual_rotation` | SPY/TLT | NIFTYBEES vs GOLDBEES |
+| `ath_breakout_in` | ATH breakout | near_high_20 + volume |
+| `lower_highs_fade` | LH distribution | lower_high_streak ≥ 2 |
+| `us_overnight_follow` | Overnight drift | GIFT gap → SESSION_OPEN |
+| `expiry_week_caution` | Monthly OPEX | Last Thu expiry fade |
+| `monday_effect_in` | Monday effect | Monday + weak GIFT bounce |
+
+### Bar features
+- `near_high_20`, `lower_high`, `lower_high_streak` in bar_aggregator + discovery miner
+
+### Learning
+- `strategy_catalog.py` — `localized_from` metadata per strategy
+- All signals flow through existing ledger → outcomes → bandit weights (no hard-promote)
+
+---
+
+## 2026-07-13 — Market awareness + fear/greed + learn-all-NSE-activities
+
+### Temporal awareness (single clock)
+- `market_session.py` — `is_nse_open()`, `minutes_to_close`, `market_clock_snapshot()`
+- `market/market_awareness.py` — refreshes `MarketContext` every 60s + on SESSION/IV/LLM events
+- `MarketContext` fields: `session_phase`, `nse_status`, `market_open`, `ist_date/time`, `minutes_to_close`, `is_expiry_day`
+- `timebox.is_market_open()` delegates to `market_session` (one source of truth)
+- Dashboard `/api/market/session` returns full clock snapshot
+
+### Fear vs greed
+- `intelligence/sentiment_index.py` — composite 0–100 from VIX (30%), FII (25%), GIFT (15%), LLM (15%), retail-FII divergence (15%)
+- Labels: Extreme Fear / Fear / Neutral / Greed / Extreme Greed
+- `sentiment_regime` strategy — contrarian BUY on extreme fear, trim on extreme greed
+
+### News awareness
+- `intelligence/news_context.py` — headlines from NEWS_ALERT, BSE, board meetings, corp actions (48h window)
+- `llm_macro` now uses filtered exchange headlines (not random ingest_log noise)
+- Dashboard shows `recent_headlines` + F&G chip
+
+### Learn every NSE-declared activity
+- `event_outcomes` now labels: CORPORATE_ACTION, BOARD_MEETING, EVENT_CALENDAR, BSE_ANNOUNCEMENT
+- `classify_corp_category` extended: split, bonus, buyback, merger, delisting
+- `calendar_activity` strategy — dividend, earnings, buyback, split/bonus signals with learned weights
+- Bulk burst polls at 08:45 + 14:05 IST (`run_bulk_burst_once`)
+
+### Strategies: 50 → 52
+- `calendar_activity`, `sentiment_regime`
+
+---

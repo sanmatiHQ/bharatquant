@@ -48,6 +48,28 @@ class MarketContext:
     recent_corporate: list[dict[str, Any]] = field(default_factory=list)
     dividend_watch: list[str] = field(default_factory=list)
     promoter_watch: list[str] = field(default_factory=list)
+    institutional_weights: dict[str, Any] = field(default_factory=dict)
+    strategy_learn_weights: dict[str, Any] = field(default_factory=dict)
+    institutional_holdings: list[dict[str, Any]] = field(default_factory=list)
+    participant_client_net: float = 0.0
+    participant_fii_net: float = 0.0
+    participant_dii_net: float = 0.0
+    retail_fii_divergence: float = 0.0
+    upcoming_events: list[dict[str, Any]] = field(default_factory=list)
+    # Market clock (IST)
+    session_phase: str = "closed"
+    nse_status: str = "Unknown"
+    market_open: bool = False
+    ist_date: str = ""
+    ist_time: str = ""
+    minutes_to_close: int = 0
+    minutes_from_open: int = 0
+    is_expiry_day: bool = False
+    is_weekend: bool = False
+    # Sentiment / news
+    fear_greed_index: float = 50.0
+    sentiment_label: str = "Neutral"
+    recent_headlines: list[dict[str, Any]] = field(default_factory=list)
 
 
 @runtime_checkable

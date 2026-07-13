@@ -305,6 +305,11 @@
 | BQ-D18 | Profit tilt — corporate cues → confidence + cost-edge expected move | deployed | BQ-D17 | `corporate_profit_tilt()` in router/fast_snapshot |
 | BQ-D19 | Session ledger — trades, PnL, tomorrow plan on fast feed | deployed | BQ-D6 | `session` in `/api/feed/fast` |
 | BQ-D20 | Dashboard render fix (`renderSandbox` JS crash) | deployed | BQ-D6 | KPIs populate after hard refresh |
+| BQ-D21 | NSE shareholding pattern ingest (promoter/FII/DII/MF %) | deployed | BQ-D17 | `nse_shareholding.py` daily poll |
+| BQ-D22 | MF/bulk client classifier (MF/FII/bank/promoter) | deployed | BQ-D21 | `institutional_entities.py` |
+| BQ-D23 | Corporate event outcome labeler (+5d/+20d returns) | deployed | BQ-D17 | `corporate_event_outcomes` table |
+| BQ-D24 | Institutional learning loop (bandit + RL seed, no LLM) | deployed | BQ-D23 | `institutional_learning.py` hourly + postmarket |
+| BQ-D25 | Strategies `bulk_distribution` + `institutional_flow` | deployed | BQ-D22 | Registry + learned confidence boost |
 
 ---
 

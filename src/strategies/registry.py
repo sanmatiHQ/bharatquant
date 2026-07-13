@@ -20,6 +20,7 @@ from .advanced_quant import (
 from .base import MarketContext, Signal, Strategy
 from .affordable_momentum import AffordableMomentumStrategy
 from .bulk_accumulation import BulkAccumulationStrategy
+from .bulk_distribution import BulkDistributionStrategy
 from .cash_futures_basis import CashFuturesBasisStrategy
 from .combined_momentum import CombinedMomentumStrategy
 from .earnings_vol import EarningsVolStrategy
@@ -28,6 +29,7 @@ from .fii_regime import FiiRegimeStrategy
 from .gift_gap import GiftGapStrategy
 from .global_risk_beta import GlobalRiskBetaStrategy
 from .insider_cluster import InsiderClusterStrategy
+from .institutional_flow import InstitutionalFlowStrategy
 from .iv_premium_sell import IvPremiumSellStrategy
 from .opening_range import OpeningRangeStrategy
 from .options_greeks import OptionsGreeksStrategy
@@ -37,8 +39,31 @@ from .quality_momentum import QualityMomentumStrategy
 from .short_term_reversal import ShortTermReversalStrategy
 from .stop_loss_guard import StopLossGuardStrategy
 from .turtle_breakout import TurtleBreakoutStrategy
-from .custom_rules import load_custom_strategies
 from .vwap_reversion import VwapReversionStrategy
+from .custom_rules import load_custom_strategies
+from .literature_strategies import (
+    ConnorsIBSStrategy,
+    CrabelNR7Strategy,
+    EmaCrossRsiStrategy,
+    LiquiditySweepStrategy,
+    MomentumConsensusStrategy,
+    TurnaroundTuesdayStrategy,
+    ZScoreReversionStrategy,
+)
+from .calendar_activity import CalendarActivityStrategy
+from .sentiment_regime import SentimentRegimeStrategy
+from .nse_localized import (
+    AthBreakoutIndiaStrategy,
+    ExpiryWeekCautionStrategy,
+    IndiaDualRotationStrategy,
+    IndiaLunchFadeStrategy,
+    IndiaOpeningDriveStrategy,
+    IndiaPowerHourStrategy,
+    LowerHighsFadeStrategy,
+    MondayEffectIndiaStrategy,
+    NiftyBuyTheDipStrategy,
+    UsOvernightFollowStrategy,
+)
 
 _BUILTIN: dict[str, Type[Strategy]] = {
     "affordable_momentum": AffordableMomentumStrategy,
@@ -54,6 +79,8 @@ _BUILTIN: dict[str, Type[Strategy]] = {
     "quality_momentum": QualityMomentumStrategy,
     "insider_cluster": InsiderClusterStrategy,
     "bulk_accumulation": BulkAccumulationStrategy,
+    "bulk_distribution": BulkDistributionStrategy,
+    "institutional_flow": InstitutionalFlowStrategy,
     "iv_premium_sell": IvPremiumSellStrategy,
     "cash_futures_basis": CashFuturesBasisStrategy,
     "expiry_gamma": ExpiryGammaStrategy,
@@ -72,6 +99,25 @@ _BUILTIN: dict[str, Type[Strategy]] = {
     "strategy_lab": StrategyLabStrategy,
     "sector_rotation": SectorRotationStrategy,
     "options_greeks": OptionsGreeksStrategy,
+    "connors_ibs": ConnorsIBSStrategy,
+    "crabel_nr7": CrabelNR7Strategy,
+    "zscore_reversion": ZScoreReversionStrategy,
+    "momentum_consensus": MomentumConsensusStrategy,
+    "ema_cross_rsi": EmaCrossRsiStrategy,
+    "liquidity_sweep": LiquiditySweepStrategy,
+    "turnaround_tuesday": TurnaroundTuesdayStrategy,
+    "india_power_hour": IndiaPowerHourStrategy,
+    "india_lunch_fade": IndiaLunchFadeStrategy,
+    "india_opening_drive": IndiaOpeningDriveStrategy,
+    "nifty_buy_the_dip": NiftyBuyTheDipStrategy,
+    "india_dual_rotation": IndiaDualRotationStrategy,
+    "ath_breakout_in": AthBreakoutIndiaStrategy,
+    "lower_highs_fade": LowerHighsFadeStrategy,
+    "us_overnight_follow": UsOvernightFollowStrategy,
+    "expiry_week_caution": ExpiryWeekCautionStrategy,
+    "monday_effect_in": MondayEffectIndiaStrategy,
+    "calendar_activity": CalendarActivityStrategy,
+    "sentiment_regime": SentimentRegimeStrategy,
 }
 
 
@@ -99,6 +145,11 @@ class StrategyRegistry:
         if config:
             for custom in load_custom_strategies(config):
                 self._strategies.append(custom)
+        if db is not None:
+            from ..intelligence.strategy_learning import load_learned_custom_strategies
+
+            for learned in load_learned_custom_strategies(db):
+                self._strategies.append(learned)
 
     async def dispatch(self, event: MarketEvent, ctx: MarketContext) -> List[Signal]:
         out: List[Signal] = []

@@ -19,7 +19,20 @@ class ContextUpdater:
 
     async def on_event(self, event: MarketEvent) -> None:
         p = event.payload or {}
-        if event.type == EventType.FII_DII_UPDATE:
+        if event.type in (EventType.SESSION_PRE_OPEN, EventType.SESSION_OPEN, EventType.SESSION_CLOSE):
+            self.ctx.nse_status = str(p.get("nse_status", self.ctx.nse_status))
+            from ..market.market_awareness import refresh_market_awareness
+
+            refresh_market_awareness(self.ctx, self.db)
+            logger.info(
+                "context_session",
+                extra={
+                    "nse_status": self.ctx.nse_status,
+                    "phase": self.ctx.session_phase,
+                    "market_open": self.ctx.market_open,
+                },
+            )
+        elif event.type == EventType.FII_DII_UPDATE:
             self.ctx.fii_net_cr = float(p.get("fii_net", 0))
             self.ctx.dii_net_cr = float(p.get("dii_net", 0))
             fn = self.ctx.fii_net_cr
@@ -53,11 +66,17 @@ class ContextUpdater:
             sectors = p.get("sectors") or {}
             if isinstance(sectors, dict):
                 self.ctx.llm_sector_bias = {str(k): float(v) for k, v in sectors.items()}
-            logger.info("context_llm_bias", extra={"bias": self.ctx.llm_bias})
+            from ..market.market_awareness import refresh_market_awareness
+
+            refresh_market_awareness(self.ctx, self.db)
+            logger.info("context_llm_bias", extra={"bias": self.ctx.llm_bias, "fg": self.ctx.fear_greed_index})
         elif event.type == EventType.FUTURES_OI_UPDATE:
             self.ctx.futures_oi_chg = float(p.get("oi_change_pct", 0) or 0)
         elif event.type == EventType.IV_UPDATE:
             self.ctx.india_vix = float(p.get("vix", p.get("india_vix", 0)))
+            from ..market.market_awareness import refresh_market_awareness
+
+            refresh_market_awareness(self.ctx, self.db)
         elif event.type == EventType.PREOPEN_PRICE and event.symbol:
             sym = event.symbol.replace("NSE:", "")
             iep = float(p.get("iep", event.price) or event.price)
@@ -69,8 +88,27 @@ class ContextUpdater:
             EventType.INSIDER_FILING,
             EventType.BLOCK_DEAL,
             EventType.NEWS_ALERT,
+            EventType.SHAREHOLDING_UPDATE,
+            EventType.MF_HOLDING_UPDATE,
+            EventType.CORPORATE_ACTION,
+            EventType.BOARD_MEETING,
+            EventType.EVENT_CALENDAR,
+            EventType.BSE_ANNOUNCEMENT,
         ):
             self._track_corporate(event)
+        elif event.type == EventType.PARTICIPANT_OI_UPDATE:
+            self.ctx.participant_client_net = float(p.get("client_net", 0) or 0)
+            self.ctx.participant_fii_net = float(p.get("fii_net", 0) or 0)
+            self.ctx.participant_dii_net = float(p.get("dii_net", 0) or 0)
+            self.ctx.retail_fii_divergence = self.ctx.participant_client_net - self.ctx.participant_fii_net
+            logger.info(
+                "context_participant_oi",
+                extra={
+                    "client": self.ctx.participant_client_net,
+                    "fii": self.ctx.participant_fii_net,
+                    "divergence": self.ctx.retail_fii_divergence,
+                },
+            )
         elif event.type == EventType.TICK and event.symbol:
             sym = event.symbol.replace("NSE:", "")
             if sym not in self.ctx.session_open and event.price > 0:
@@ -112,6 +150,7 @@ class ContextUpdater:
             normalize_bulk,
             normalize_corp_announce,
             normalize_insider,
+            normalize_shareholding,
         )
 
         p = dict(event.payload or {})
@@ -119,8 +158,30 @@ class ContextUpdater:
             item = normalize_insider(p)
         elif event.type == EventType.BLOCK_DEAL:
             item = normalize_bulk(p)
+        elif event.type == EventType.SHAREHOLDING_UPDATE:
+            item = normalize_shareholding(p)
+            sym = str(item.get("symbol", ""))
+            if sym:
+                self.ctx.institutional_holdings = (
+                    [item] + [h for h in self.ctx.institutional_holdings if h.get("symbol") != sym]
+                )[:12]
+        elif event.type == EventType.MF_HOLDING_UPDATE:
+            item = normalize_bulk(p)
+            item["kind"] = "mf_flow"
+            item["category"] = "mf_holding"
         else:
             item = normalize_corp_announce(p)
+        if event.type == EventType.CORPORATE_ACTION:
+            item = {**item, "kind": "corp_action", "category": str(p.get("subject", p.get("purpose", "action")))[:40]}
+            self.ctx.upcoming_events = ([item] + list(self.ctx.upcoming_events))[:15]
+        elif event.type == EventType.BOARD_MEETING:
+            item = {**item, "kind": "board_meeting", "category": "board_meeting"}
+            self.ctx.upcoming_events = ([item] + list(self.ctx.upcoming_events))[:15]
+        elif event.type == EventType.EVENT_CALENDAR:
+            item = {**item, "kind": "event_calendar", "category": str(p.get("purpose", "calendar"))[:40]}
+            self.ctx.upcoming_events = ([item] + list(self.ctx.upcoming_events))[:15]
+        elif event.type == EventType.BSE_ANNOUNCEMENT:
+            item = {**item, "kind": "bse_announce", "category": "bse", "source": "bse"}
         if event.symbol and not item.get("symbol"):
             item["symbol"] = event.symbol.replace("NSE:", "")
         item["ts"] = int(p.get("_ts", 0)) or int(time.time())
@@ -137,6 +198,9 @@ class ContextUpdater:
 
     def subscribe(self, bus) -> None:
         types = (
+            EventType.SESSION_PRE_OPEN,
+            EventType.SESSION_OPEN,
+            EventType.SESSION_CLOSE,
             EventType.FII_DII_UPDATE,
             EventType.GIFT_TICK,
             EventType.GIFT_SESSION_CHANGE,
@@ -148,6 +212,14 @@ class ContextUpdater:
             EventType.INSIDER_FILING,
             EventType.BLOCK_DEAL,
             EventType.NEWS_ALERT,
+            EventType.SHAREHOLDING_UPDATE,
+            EventType.MF_HOLDING_UPDATE,
+            EventType.CORPORATE_ACTION,
+            EventType.BOARD_MEETING,
+            EventType.EVENT_CALENDAR,
+            EventType.PARTICIPANT_OI_UPDATE,
+            EventType.BSE_ANNOUNCEMENT,
+            EventType.RECONCILE_ALERT,
         )
         for t in types:
             bus.subscribe(t, self.on_event)

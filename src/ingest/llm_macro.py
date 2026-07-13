@@ -255,20 +255,11 @@ async def poll_llm_macro(publish: Callable, db, interval_sec: float | None = Non
     while True:
         try:
             from ..ops.agent_state import _get
+            from ..intelligence.news_context import headline_titles
 
             ctx_raw = _get(db, "agent_context")
             ctx = json.loads(ctx_raw) if ctx_raw else {}
-            headlines_row = db._conn.execute(
-                "SELECT payload_json FROM ingest_log ORDER BY ts DESC LIMIT 8"
-            ).fetchall()
-            headlines = []
-            for r in headlines_row:
-                try:
-                    p = json.loads(r["payload_json"])
-                    headlines.append(str(p.get("title", p.get("summary", "")))[:120])
-                except Exception:
-                    pass
-            ctx["headlines"] = headlines
+            ctx["headlines"] = headline_titles(db, limit=10)
             oi_row = db._conn.execute(
                 "SELECT oi_change_pct FROM futures_oi ORDER BY ts DESC LIMIT 1"
             ).fetchone()

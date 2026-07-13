@@ -173,6 +173,33 @@ def build_live_feed(db: DB, *, fast: bool = False) -> dict[str, Any]:
         "lines": [session["plan_for_tomorrow"]],
     }
     corporate = load_corporate_activity(db, lookback_days=7)
+    from ..intelligence.institutional_learning import load_institutional_weights
+    from ..intelligence.strategy_learning import load_strategy_learn_weights
+
+    inst_weights = load_institutional_weights(db)
+    strat_weights = load_strategy_learn_weights(db)
+    signal_outcomes = db._conn.execute(
+        "SELECT COUNT(*) c FROM strategy_signal_outcomes WHERE ret_15m IS NOT NULL"
+    ).fetchone()["c"]
+    learned_rules = db._conn.execute(
+        "SELECT COUNT(*) c FROM strategy_discovery WHERE promoted=1"
+    ).fetchone()["c"]
+    inst_outcomes = db._conn.execute(
+        "SELECT COUNT(*) c FROM corporate_event_outcomes WHERE ret_5d IS NOT NULL"
+    ).fetchone()["c"]
+    inst_rl = db._conn.execute("SELECT COUNT(*) c FROM rl_transitions").fetchone()["c"]
+    inst_shp = db._conn.execute("SELECT COUNT(*) c FROM shareholding_snapshots").fetchone()["c"]
+    institutional_learning = {
+        "labeled_outcomes": int(inst_outcomes),
+        "signal_outcomes": int(signal_outcomes),
+        "promoted_rules": int(learned_rules),
+        "rl_transitions": int(inst_rl),
+        "shareholding_snapshots": int(inst_shp),
+        "strategy_weights": {**(inst_weights.get("strategies") or {}), **(strat_weights.get("strategies") or {})},
+        "unified_weights": strat_weights.get("strategies") or {},
+        "pattern_count": len(inst_weights.get("patterns") or {}),
+        "updated_ts": strat_weights.get("ts") or inst_weights.get("ts"),
+    }
     sym_set = list({p["symbol"] for p in positions} | {q["symbol"] for q in pulse.get("live_quotes", [])})
     sparklines = {} if fast else sparklines_for_symbols(db, sym_set)
 
@@ -193,6 +220,15 @@ def build_live_feed(db: DB, *, fast: bool = False) -> dict[str, Any]:
         "gift_pct": ctx.get("gift_nifty_change_pct"),
         "llm_bias": ctx.get("llm_bias", 0),
         "india_vix": ctx.get("india_vix"),
+        "session_phase": ctx.get("session_phase"),
+        "nse_status": ctx.get("nse_status"),
+        "market_open": ctx.get("market_open"),
+        "ist_date": ctx.get("ist_date"),
+        "ist_time": ctx.get("ist_time"),
+        "minutes_to_close": ctx.get("minutes_to_close"),
+        "fear_greed_index": ctx.get("fear_greed_index", 50),
+        "sentiment_label": ctx.get("sentiment_label", "Neutral"),
+        "recent_headlines": ctx.get("recent_headlines", [])[:6],
         "premarket_brief": premarket_brief,
         "llm_postmortem": llm_postmortem,
         "rl_last_train": rl_last_train,
@@ -227,6 +263,7 @@ def build_live_feed(db: DB, *, fast: bool = False) -> dict[str, Any]:
         "xai": xai,
         "session": session,
         "corporate": corporate,
+        "institutional_learning": institutional_learning,
         "sparklines": sparklines,
         "sandbox": sandbox_snapshot_light(db),
         "transport": "fast" if fast else "snapshot",

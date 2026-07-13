@@ -26,6 +26,8 @@ logger = logging.getLogger("bharatquant.market_routines")
 _TZ = ZoneInfo(os.getenv("TZ", "Asia/Kolkata"))
 KEY_PREMARKET_DAY = "premarket_routine_day"
 KEY_POSTMARKET_DAY = "postmarket_routine_day"
+KEY_BULK_BURST_PREFIX = "bulk_burst_done"
+_BULK_BURST_TIMES = ((8, 45), (14, 5))
 
 
 def _ist_now() -> datetime:
@@ -157,8 +159,9 @@ def _update_rl_strategy_row(db: DB, version: str, meta: dict) -> None:
         )
 
 
-async def run_postmarket_routine(db: DB, *, force: bool = False) -> dict[str, Any]:
+async def run_postmarket_routine(db: DB, *, force: bool = False, ctx: Any = None) -> dict[str, Any]:
     """16:15 — slippage, guarded RL, regime policies, strategy version, post-mortem."""
+    from ..intelligence.institutional_learning import refresh_context_learning
     from ..intelligence.llm_postmortem import run_llm_postmortem
     from ..intelligence.sandbox_review import build_sandbox_review
     from ..ops.gcs_store import sync_rl_model
@@ -167,8 +170,15 @@ async def run_postmarket_routine(db: DB, *, force: bool = False) -> dict[str, An
         already_trained_today,
         train_regime_policies,
     )
+    from ..strategies.base import MarketContext
 
     slippage = analyze_today_slippage(db)
+    learn_ctx = ctx if ctx is not None else MarketContext()
+    learn_meta = await asyncio.to_thread(refresh_context_learning, db, learn_ctx)
+    if ctx is not None:
+        ctx.institutional_weights = learn_ctx.institutional_weights
+        ctx.strategy_learn_weights = getattr(learn_ctx, "strategy_learn_weights", {})
+
     rl_meta: dict[str, Any] = {"skipped": True, "reason": "already_trained"}
     version = os.getenv("RL_ACTIVE_VERSION", "ppo_v1")
     model_dir = os.getenv("RL_MODEL_DIR", "models/rl")
@@ -212,6 +222,7 @@ async def run_postmarket_routine(db: DB, *, force: bool = False) -> dict[str, An
         "ok": True,
         "slippage": slippage,
         "rl": rl_meta,
+        "institutional_learning": learn_meta,
         "postmortem": postmortem,
         "narrative": narrative,
     }
@@ -223,6 +234,7 @@ async def market_routines_loop(
     *,
     rl_agent: Any = None,
     publish_activity: Optional[Callable[[str], None]] = None,
+    publish: Optional[Callable] = None,
     interval_sec: float = 30.0,
 ) -> None:
     """Background IST scheduler — runs once per weekday at configured times."""
@@ -251,8 +263,28 @@ async def market_routines_loop(
                 elif hm == (post_h, post_m) and (not post_done or post_done["v"] != day):
                     if publish_activity:
                         publish_activity("Post-market: slippage + RL train + post-mortem…")
-                    await run_postmarket_routine(db)
+                    await run_postmarket_routine(db, ctx=ctx)
                     await asyncio.sleep(61)
+
+                for bh, bm in _BULK_BURST_TIMES:
+                    burst_key = f"{KEY_BULK_BURST_PREFIX}_{day}_{bh:02d}{bm:02d}"
+                    burst_done = db._conn.execute(
+                        "SELECT v FROM settings WHERE k=?", (burst_key,)
+                    ).fetchone()
+                    if hm == (bh, bm) and not burst_done and publish is not None:
+                        try:
+                            from ..ingest.nse_bulk import run_bulk_burst_once
+
+                            await run_bulk_burst_once(publish, db=db)
+                            with db.tx() as conn:
+                                conn.execute(
+                                    "INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                                    (burst_key, "1"),
+                                )
+                            logger.info("bulk_burst_poll", extra={"time": f"{bh}:{bm:02d}"})
+                        except Exception:
+                            logger.exception("bulk_burst_error")
+                        await asyncio.sleep(61)
         except Exception:
             logger.exception("market_routines_error")
         await asyncio.sleep(interval_sec)

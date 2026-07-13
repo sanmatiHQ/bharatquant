@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from ..db.database import DB
+from ..intelligence.institutional_entities import classify_entity
 
 _DIVIDEND_KW = ("dividend", "interim dividend", "final dividend", "record date", "ex-date", "ex date")
 _PROMOTER_KW = ("promoter", "promoter group", "increase stake", "acquisition of shares", "pledge")
@@ -14,10 +15,27 @@ _EARNINGS_KW = ("result", "earnings", "quarter", "financial", "profit", "revenue
 _RIGHTS_KW = ("rights issue", "rights entitlement", "preferential")
 
 
+_SPLIT_KW = ("stock split", "sub-division", "subdivision", "face value")
+_BONUS_KW = ("bonus issue", "bonus shares", "bonus equity")
+_BUYBACK_KW = ("buyback", "buy-back", "share repurchase", "repurchase of shares")
+_MERGER_KW = ("merger", "amalgamation", "demerger", "scheme of arrangement")
+_DELIST_KW = ("delist", "delisting", "exit from exchange")
+
+
 def classify_corp_category(text: str) -> str:
     t = (text or "").lower()
     if any(k in t for k in _DIVIDEND_KW):
         return "dividend"
+    if any(k in t for k in _BONUS_KW):
+        return "bonus"
+    if any(k in t for k in _SPLIT_KW):
+        return "split"
+    if any(k in t for k in _BUYBACK_KW):
+        return "buyback"
+    if any(k in t for k in _MERGER_KW):
+        return "merger"
+    if any(k in t for k in _DELIST_KW):
+        return "delisting"
     if any(k in t for k in _RIGHTS_KW):
         return "rights"
     if any(k in t for k in _EARNINGS_KW):
@@ -54,17 +72,47 @@ def normalize_bulk(row: dict) -> dict[str, Any]:
     side = "buy" if "buy" in side_raw or "acq" in side_raw else "sell"
     sym = str(row.get("symbol", "")).replace("NSE:", "")
     qty = float(row.get("qty", row.get("quantity", 0)) or 0)
+    entity = str(row.get("entity_class", "")) or classify_entity(client)
     return {
         "kind": "bulk",
         "category": "block_deal",
         "symbol": sym,
         "client": client,
+        "entity_class": entity,
         "side": side,
         "qty": qty,
         "price": float(row.get("price", row.get("wap", 0)) or 0),
         "date": row.get("date", row.get("tradedDate", "")),
-        "reason": f"{client or 'Institution'} {side} {int(qty):,} shares",
-        "why": "NSE large deal (bulk/block snapshot)",
+        "reason": f"{client or entity.upper()} {side} {int(qty):,} shares",
+        "why": f"NSE large deal — {entity} flow",
+    }
+
+
+def normalize_shareholding(row: dict) -> dict[str, Any]:
+    sym = str(row.get("symbol", "")).replace("NSE:", "")
+    deltas = row.get("deltas") or {}
+    mf_d = float(deltas.get("mf_pct") or deltas.get("institutional_pct") or 0)
+    fii_d = float(deltas.get("fii_pct") or 0)
+    pub_d = float(deltas.get("public_pct") or 0)
+    prom_d = float(deltas.get("promoter_pct") or 0)
+    side = "buy" if mf_d > 0 or fii_d > 0 or pub_d > 0 or prom_d > 0 else "sell" if mf_d < 0 or pub_d < 0 or prom_d < 0 else "neutral"
+    return {
+        "kind": "shareholding",
+        "category": "shareholding",
+        "symbol": sym,
+        "side": side,
+        "entity_class": "mf" if abs(mf_d) >= abs(fii_d) else "fii",
+        "mf_pct": row.get("mf_pct"),
+        "fii_pct": row.get("fii_pct"),
+        "promoter_pct": row.get("promoter_pct"),
+        "public_pct": row.get("public_pct"),
+        "deltas": deltas,
+        "as_of_date": row.get("as_of_date", ""),
+        "reason": (
+            f"SHP {sym}: promoter {prom_d:+.2f}%, public {pub_d:+.2f}%, "
+            f"inst {mf_d:+.2f}% QoQ"
+        ),
+        "why": "NSE quarterly shareholding pattern — institutional stake change",
     }
 
 
@@ -121,10 +169,27 @@ def load_corporate_activity(db: DB, *, lookback_days: int = 7) -> dict[str, Any]
     bulk_raw = _rows_from_ingest(db, "BLOCK_DEAL", limit=30, since_ts=since)
     corp_raw = _rows_from_ingest(db, "NEWS_ALERT", limit=40, since_ts=since)
     fii_raw = _rows_from_ingest(db, "FII_DII_UPDATE", limit=5, since_ts=since)
+    shp_raw = _rows_from_ingest(db, "SHAREHOLDING_UPDATE", limit=20, since_ts=since - 90 * 86400)
+    mf_raw = _rows_from_ingest(db, "MF_HOLDING_UPDATE", limit=20, since_ts=since)
 
     insider = [normalize_insider(r) for r in insider_raw]
     bulk = [normalize_bulk(r) for r in bulk_raw]
     announcements = [normalize_corp_announce(r) for r in corp_raw]
+    shareholding = [normalize_shareholding(r) for r in shp_raw]
+    mf_flows = [
+        normalize_bulk(r) if r.get("clientName") else {
+            "kind": "mf_flow",
+            "category": "mf_holding",
+            "symbol": str(r.get("symbol", "")).replace("NSE:", ""),
+            "client": r.get("client", ""),
+            "entity_class": "mf",
+            "side": r.get("side", "buy"),
+            "qty": r.get("qty"),
+            "reason": f"MF {r.get('client', 'fund')} {r.get('side', 'buy')}",
+            "why": "MF block-flow (classified bulk client)",
+        }
+        for r in mf_raw
+    ]
 
     dividends = [a for a in announcements if a["category"] == "dividend"]
     promoter_moves = [i for i in insider if i["category"] == "promoter" or "promoter" in i.get("person", "").lower()]
@@ -160,6 +225,10 @@ def load_corporate_activity(db: DB, *, lookback_days: int = 7) -> dict[str, Any]
         n = normalize_corp_announce(r)
         n["ts"] = int(r.get("_ts", 0))
         timeline.append(n)
+    for r in shp_raw:
+        n = normalize_shareholding(r)
+        n["ts"] = int(r.get("_ts", 0))
+        timeline.append(n)
     timeline.sort(key=lambda x: x.get("ts", 0), reverse=True)
     timeline = timeline[:25]
 
@@ -173,6 +242,8 @@ def load_corporate_activity(db: DB, *, lookback_days: int = 7) -> dict[str, Any]
             "dividends": len(dividends),
             "promoter": len(promoter_moves),
             "mass_flow": len(mass_flow),
+            "shareholding": len(shareholding),
+            "mf_flows": len(mf_flows),
         },
         "insider": insider[:12],
         "bulk": bulk[:12],
@@ -180,15 +251,27 @@ def load_corporate_activity(db: DB, *, lookback_days: int = 7) -> dict[str, Any]
         "promoter_moves": promoter_moves[:8],
         "announcements": announcements[:15],
         "mass_flow": mass_flow[:3],
+        "shareholding": shareholding[:8],
+        "mf_flows": mf_flows[:8],
         "timeline": timeline,
     }
 
 
 def corporate_profit_tilt(symbol: str, ctx: Any) -> tuple[float, list[str]]:
     """Map corporate/mass-market signals → expected-profit multiplier for a symbol."""
+    from .institutional_learning import load_institutional_weights, pattern_multiplier
+
     sym = str(symbol or "").replace("NSE:", "")
     mult = 1.0
     reasons: list[str] = []
+
+    weights = getattr(ctx, "institutional_weights", None)
+    if not weights:
+        db = getattr(ctx, "db", None)
+        if db is not None:
+            weights = load_institutional_weights(db)
+        else:
+            weights = {}
 
     promoter_watch = list(getattr(ctx, "promoter_watch", None) or [])
     dividend_watch = list(getattr(ctx, "dividend_watch", None) or [])
@@ -207,6 +290,7 @@ def corporate_profit_tilt(symbol: str, ctx: Any) -> tuple[float, list[str]]:
         cat = str(ev.get("category", ""))
         side = str(ev.get("side", ""))
         kind = str(ev.get("kind", ""))
+        entity = str(ev.get("entity_class", "other"))
         if kind in ("insider",) or cat == "promoter":
             if side == "buy":
                 mult *= 1.1
@@ -221,9 +305,23 @@ def corporate_profit_tilt(symbol: str, ctx: Any) -> tuple[float, list[str]]:
             elif side == "sell":
                 mult *= 0.85
                 reasons.append("bulk_sell")
+        elif kind == "shareholding" and side == "buy":
+            mult *= 1.07
+            reasons.append("institutional_shp_up")
         elif cat == "dividend":
             mult *= 1.06
             reasons.append("dividend_catalyst")
+
+        et = {
+            "insider": "INSIDER_FILING",
+            "bulk": "BLOCK_DEAL",
+            "shareholding": "SHAREHOLDING_UPDATE",
+            "mf_flow": "MF_HOLDING_UPDATE",
+        }.get(kind, "NEWS_ALERT")
+        lm, lr = pattern_multiplier(weights, event_type=et, category=cat, side=side, entity_class=entity)
+        if lm != 1.0 and lr:
+            mult *= lm
+            reasons.append(lr)
 
     return min(1.35, max(0.55, mult)), reasons
 
@@ -256,6 +354,15 @@ def corporate_narrative_lines(snapshot: dict) -> list[str]:
             f"Income opportunity — dividend {d.get('symbol', '?')}: "
             f"{(d.get('title') or d.get('reason', ''))[:80]}; capture yield before ex-date."
         )
+    if c.get("shareholding"):
+        sh = (snapshot.get("shareholding") or [{}])[0]
+        lines.append(
+            f"Profit cue — shareholding {sh.get('symbol', '?')}: "
+            f"{sh.get('reason', '')}; MF/FII stake change → follow institutional drift."
+        )
+    if c.get("mf_flows"):
+        mf = (snapshot.get("mf_flows") or [{}])[0]
+        lines.append(f"Profit cue — MF flow {mf.get('symbol', '?')}: {mf.get('reason', '')}.")
     if not lines:
         lines.append(
             "Profit scan: no insider/bulk/dividend edge in 7-day window — defaulting to momentum + cost-edge gates."

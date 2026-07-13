@@ -5,6 +5,7 @@ from typing import Optional
 
 from ..events.types import EventType, MarketEvent
 from ..intelligence.corporate_activity import normalize_bulk
+from ..intelligence.institutional_entities import classify_entity, entity_confidence_boost
 from .base import MarketContext, Signal, Strategy
 
 
@@ -24,4 +25,17 @@ class BulkAccumulationStrategy:
         if not sym:
             return None
         norm = normalize_bulk(p)
-        return Signal(self.id, sym, "BUY", "CNC", 0.68, norm.get("reason", f"bulk_qty_{int(qty)}"))
+        entity = norm.get("entity_class") or classify_entity(str(norm.get("client", "")))
+        conf = 0.68 + entity_confidence_boost(entity, "buy")
+        weights = getattr(ctx, "institutional_weights", {}) or {}
+        strat_w = float((weights.get("strategies") or {}).get(self.id, 1.0))
+        conf = min(0.9, conf * strat_w)
+        return Signal(
+            self.id,
+            sym,
+            "BUY",
+            "CNC",
+            conf,
+            norm.get("reason", f"bulk_qty_{int(qty)}"),
+            meta={"entity_class": entity},
+        )
