@@ -89,13 +89,23 @@ while IFS= read -r -d '' f; do
   done
 done < <(git ls-files -z)
 
-# Git history — specific production fingerprints only (not generic placeholders)
-for needle in '0.0.0.0' 'YOUR-PUBLIC-HOST.sslip.io' 'your-gcp-project-id'; do
-  if git log --all -S "$needle" --oneline 2>/dev/null | grep -q .; then
-    echo "FAIL: git history still contains: $needle — run: bash scripts/scrub_git_history.sh"
+# Git history — production fingerprints in real content (exclude audit/scrub sources)
+_check_history_needle() {
+  local needle="$1"
+  local hits
+  hits=$(git log --all -S "$needle" --oneline -- \
+    . ':(exclude)scripts/audit_secrets.sh' \
+    ':(exclude)scripts/scrub_git_history.sh' \
+    ':(exclude)tests/test_open_source_hygiene.py' 2>/dev/null || true)
+  if [[ -n "$hits" ]]; then
+    echo "FAIL: git history still contains: $needle"
+    echo "$hits" | head -3
     FAIL=1
   fi
-done
+}
+_check_history_needle '0.0.0.0'
+_check_history_needle 'YOUR-PUBLIC-HOST.sslip.io'
+_check_history_needle 'your-gcp-project-id'
 
 if [[ "$FAIL" -eq 0 ]]; then
   echo "OK: open-source hygiene passed"
