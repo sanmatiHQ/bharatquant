@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Install Caddy + TLS on BharatQuant VM. Run ON the VM (sudo).
-# Uses YOUR-PUBLIC-HOST.sslip.io → static IP (no custom DNS required).
+# Uses sslip.io hostname from env — no custom DNS required.
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/opt/bharatquant/zerodha-momo-rl}"
 ENV_FILE="${ENV_FILE:-/etc/bharatquant/env}"
-HOST="${BHARATQUANT_PUBLIC_HOST:-YOUR-PUBLIC-HOST.sslip.io}"
+HOST="${BHARATQUANT_PUBLIC_HOST:-}"
+if [[ -z "$HOST" ]]; then
+  echo "Set BHARATQUANT_PUBLIC_HOST in /etc/bharatquant/env (e.g. 203-0-113-10.sslip.io)"
+  exit 1
+fi
 
 echo "==> Install Caddy"
 export DEBIAN_FRONTEND=noninteractive
@@ -19,7 +23,12 @@ fi
 apt-get install -y -qq caddy
 
 echo "==> Caddyfile"
-install -m 644 "$REPO_DIR/deploy/Caddyfile" /etc/caddy/Caddyfile
+cat > /etc/caddy/Caddyfile <<EOF
+${HOST} {
+	reverse_proxy 127.0.0.1:8080
+}
+EOF
+chmod 644 /etc/caddy/Caddyfile
 systemctl enable caddy
 systemctl restart caddy
 

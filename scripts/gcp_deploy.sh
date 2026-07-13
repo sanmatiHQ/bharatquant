@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Full GCP deploy: provision (if needed) → rsync code → sync secrets → VM bootstrap
 #
-# Prereq: gcloud auth login  (maintainer@example.com)
+# Prereq: gcloud auth login
 # Usage:   bash scripts/gcp_deploy.sh
 set -euo pipefail
 

@@ -38,6 +38,11 @@ if [[ -z "$STATIC_IP" ]]; then
     --project="$PROJECT" --format='get(address)' 2>/dev/null || true)
 fi
 
+PUBLIC_HOST="${BHARATQUANT_PUBLIC_HOST:-}"
+if [[ -z "$PUBLIC_HOST" && -n "$STATIC_IP" ]]; then
+  PUBLIC_HOST="${STATIC_IP//./-}.sslip.io"
+fi
+
 BUCKET="${GCS_BACKUP_BUCKET:-${PROJECT}-bharatquant}"
 TMP_ENV=$(mktemp)
 trap 'rm -f "$TMP_ENV"' EXIT
@@ -46,6 +51,9 @@ cp "$ROOT/deploy/bharatquant.env.production" "$TMP_ENV"
 sed -i '' "s|__GCP_PROJECT_ID__|${PROJECT}|g" "$TMP_ENV" 2>/dev/null || sed -i "s|__GCP_PROJECT_ID__|${PROJECT}|g" "$TMP_ENV"
 sed -i '' "s|__GCP_STATIC_IP__|${STATIC_IP}|g" "$TMP_ENV" 2>/dev/null || sed -i "s|__GCP_STATIC_IP__|${STATIC_IP}|g" "$TMP_ENV"
 sed -i '' "s|__GCS_BACKUP_BUCKET__|${BUCKET}|g" "$TMP_ENV" 2>/dev/null || sed -i "s|__GCS_BACKUP_BUCKET__|${BUCKET}|g" "$TMP_ENV"
+if [[ -n "$PUBLIC_HOST" ]]; then
+  sed -i '' "s|__BHARATQUANT_PUBLIC_HOST__|${PUBLIC_HOST}|g" "$TMP_ENV" 2>/dev/null || sed -i "s|__BHARATQUANT_PUBLIC_HOST__|${PUBLIC_HOST}|g" "$TMP_ENV"
+fi
 sed -i '' "s|__KITE_API_KEY__|${KITE_API_KEY}|g" "$TMP_ENV" 2>/dev/null || sed -i "s|__KITE_API_KEY__|${KITE_API_KEY}|g" "$TMP_ENV"
 sed -i '' "s|__KITE_API_SECRET__|${KITE_API_SECRET}|g" "$TMP_ENV" 2>/dev/null || sed -i "s|__KITE_API_SECRET__|${KITE_API_SECRET}|g" "$TMP_ENV"
 sed -i '' "s|__KITE_USER_ID__|${KITE_USER_ID:-}|g" "$TMP_ENV" 2>/dev/null || sed -i "s|__KITE_USER_ID__|${KITE_USER_ID:-}|g" "$TMP_ENV"

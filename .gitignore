@@ -1,9 +1,18 @@
 # Secrets — never commit
 .env
+.env.*
+!.env.example
 .kite_token.json
 .kite_token.json.*
 *.pem
 credentials.json
+**/secrets.json
+
+# Local GCP state (contains your static IP)
+.gcp_state.env
+
+# Generated TLS/site config (may contain your public hostname)
+deploy/Caddyfile
 
 # Python
 __pycache__/
@@ -28,6 +37,8 @@ logs/*.pid
 logs/*.1
 models/
 .gcp_state.env
+*.sqlite
+*.sqlite3
 !logs/.gitkeep
 
 # IDE

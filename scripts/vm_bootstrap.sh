@@ -81,6 +81,6 @@ if [[ -x "$REPO_DIR/scripts/setup_https.sh" ]]; then
 fi
 
 echo "==> Bootstrap done"
-PUBLIC_HOST=$(grep '^BHARATQUANT_PUBLIC_HOST=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo "YOUR-PUBLIC-HOST.sslip.io")
+PUBLIC_HOST=$(grep '^BHARATQUANT_PUBLIC_HOST=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo "localhost")
 echo "Dashboard: https://${PUBLIC_HOST}/dashboard"
 echo "Kite redirect: https://${PUBLIC_HOST}/kite/callback"

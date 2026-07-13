@@ -1,8 +1,33 @@
-# BharatQuant — autonomous NSE trading (event-driven)
+# BharatQuant — autonomous NSE paper/live trading (open source)
 
-**No manual data. No fake OHLC. No cron trading.**
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 
-See **[CHANGELOG.md](CHANGELOG.md)** for full session history (2026-07-13: budget gate, real holdings, 30 strategies, dashboard UX).
+**Event-driven NSE agent** — Kite Connect execution, paper→live gate, RL guardrails, telemetry dashboard.
+
+> **Not financial advice.** This software is for research and education. Trading involves risk of loss. You are responsible for compliance with SEBI, exchange, and broker rules. Run paper mode first.
+
+## Open source
+
+- **License:** [Apache 2.0](LICENSE)
+- **Issues & PRs:** [github.com/sanmatiHQ/bharatquant](https://github.com/sanmatiHQ/bharatquant)
+- **Contributing:** fork → branch → tests green → PR with a short problem/solution note
+- **Security:** never commit `.env`, Kite tokens, or DB files — run `bash scripts/audit_secrets.sh` before pushing
+
+### What is **not** in this repo (by design)
+
+| Never committed | Where it lives |
+|-----------------|----------------|
+| Kite API key/secret, password, TOTP | Your `.env` (copy from `.env.example`) |
+| Access tokens | `.kite_token.json` (local / VM only) |
+| SQLite trades & PnL | `data/trading.db` or VM `/var/lib/bharatquant/` |
+| RL model weights | `models/rl/` (optional GCS sync) |
+| GCP deploy state | `.gcp_state.env` |
+| Generated TLS config | `deploy/Caddyfile` (use `deploy/Caddyfile.example`) |
+
+If this repo was ever private with real secrets in local-only files, **rotate Kite and dashboard passwords** before going public.
+
+---
 
 ## Daily budget (hard cap)
 
@@ -12,11 +37,7 @@ See **[CHANGELOG.md](CHANGELOG.md)** for full session history (2026-07-13: budge
 | Phase 1 | **paper_learn** — real Kite ticks, paper orders, RL on live market |
 | Phase 2 | **live_deploy** — set `TRADING_MODE=live` after `LIVE_GATE_MIN_PAPER_RETURN_PCT` met |
 | No auto top-up | Paper cash seeds **once** — agent cannot invent money |
-| Raise limit | Agent requests via dashboard → you **Approve** within **15 min** or request expires; agent continues with current budget |
-
-## Real portfolio
-
-With Kite token active, the agent syncs your **real Zerodha holdings** and skips paper CNC buys on symbols you already own.
+| Raise limit | Agent requests via dashboard → you **Approve** within **15 min** or request expires |
 
 ## Data policy (non-negotiable)
 
@@ -24,111 +45,68 @@ With Kite token active, the agent syncs your **real Zerodha holdings** and skips
 |------|-------------|
 | Execution prices | Kite LTP / WebSocket TICK only |
 | Screening OHLC | Kite `historical()` only — `DataUnavailableError` if missing |
-| No fallback LTP | Removed `ltp=100`; missing price → skip trade + log error |
-| No stub APIs | Flask `app.py` deprecated; FastAPI `dashboard.py` uses SQLite only |
-| No 09:20 cron | `scheduler.py` / `trade_executor.py` exit with error |
+| No fallback LTP | Missing price → skip trade + log error |
 | GIFT signal | `yfinance` proxy tagged `SIGNAL_ONLY` — never used for order price |
 | Tests only | `tests/mock_feed.py` — never imported in production paths |
 
-## Run
+## Quick start (local)
 
 ```bash
-cd "/Users/iamabymini/Coding Projects/Stock Market/zerodha-momo-rl"
+git clone https://github.com/sanmatiHQ/bharatquant.git
+cd bharatquant
+cp .env.example .env   # fill KITE_API_KEY, KITE_API_SECRET, etc.
 set -a && source .env && set +a
 
-# One-time bootstrap (DB, instruments, paper cash, Kite token check)
 python3.11 scripts/setup_local.py
-
-# Engine + dashboard :8080 (supervisor auto-arms; paper mode stays on)
 bash src/ops/start_system.sh
 ```
 
-**Continuous auto-trade loop** (no manual intervention):
+Dashboard: http://127.0.0.1:8080/dashboard
 
-- **Enter:** momentum / VWAP / opening-range signals on live ticks
-- **Size:** deploys cash across open slots (`MAX_POSITIONS=8`, per-trade cap)
-- **Exit:** take-profit 2%, trailing stop 1.5%, stop-loss 4%, MIS square-off at close
-- **Learn:** RL records every decision; retrains after each sell (`RL_TRAIN_ON_TRADE=true`)
-
-**Kite login** (evening / token expired):
+**Kite login** (token expired):
 
 ```bash
 python3.11 -m src.auth.kite_auth --auto
-# or paste request_token URL while dashboard is up — /kite/callback on :8080
 ```
 
-Dashboard: http://127.0.0.1:8080/dashboard (public read-only) · Owner: http://127.0.0.1:8080/admin
-
-Set `DASHBOARD_ADMIN_USER` + `DASHBOARD_ADMIN_PASSWORD` in `.env` — public sees everything; only owner can halt, approve budget, or paper-buy.
-
-## GCP + GCS + auto-start (production — **no Mac dependency**)
-
-**One command** (from any machine with `gcloud auth login`):
+## GCP deploy (optional)
 
 ```bash
-cd "/Users/iamabymini/Coding Projects/Stock Market/zerodha-momo-rl"
+# Set GCP_PROJECT_ID, Kite creds, dashboard password in .env first
 bash scripts/gcp_deploy.sh
 ```
 
-VM runs **24×7** (`ENGINE_24X7=true`): supervisor + engine + dashboard via systemd.
-Mac can be off — agent learns and trades paper on real NSE data in the cloud.
+- Provisions GCE VM + static IP + GCS bucket (idempotent)
+- Secrets pushed from **your** `.env` only — never from git
+- Kite console: whitelist VM static IP; redirect `https://YOUR_HOST/kite/callback`
 
-This provisions (idempotent):
-- GCE VM `bharatquant-engine` + **static IP** (asia-south1-a)
-- GCS bucket `your-gcp-project-id-bharatquant`
-- Firewall :8080 + :22
-- Pushes code + `.env` secrets + Kite token to VM
-- Runs `vm_bootstrap.sh` → systemd supervisor
+See `deploy/bharatquant.env.production` for non-secret production defaults (placeholders only).
 
-Project: `your-gcp-project-id` (shared billing with GeM stack)
+## Architecture docs
 
-Manual steps (split):
-
-```bash
-bash scripts/gcp_provision.sh          # VM + IP + bucket only
-bash scripts/gcp_sync_secrets.sh       # push /etc/bharatquant/env
-bash scripts/vm_bootstrap.sh         # on VM via SSH
-```
-
-**Kite developer console** (required for live API orders Apr 2026+):
-- Whitelist static IP from `.gcp_state.env` → `GCP_STATIC_IP`
-- Redirect URL: `http://<STATIC_IP>:8080/kite/callback`
-
-On VM after deploy:
-
-```bash
-gcloud compute ssh bharatquant-engine --zone=asia-south1-a --project=your-gcp-project-id
-sudo journalctl -u bharatquant-supervisor -f
-curl -s http://127.0.0.1:8080/health
-```
-
-Redeploy after code changes:
-
-```bash
-bash scripts/gcp_deploy.sh
-# or on VM: bash scripts/deploy_vm.sh
-```
+- `docs/EVOLUTION_LOG.md` — design decisions & ops notes (sanitized)
+- `docs/SYSTEM_TRACKER.md` — milestone tracker
+- `CHANGELOG.md` — release history
 
 ## RL / PPO
 
-Observer records transitions on every agent decision. Trains after each closed trade and at `SESSION_CLOSE`:
+Observer records transitions on every agent decision. Guarded training with shadow backtest before weight promotion:
 
 ```bash
-python3.11 -m src.rl.rl_trainer --version ppo_v1 --epochs 4 --sync-gcs
+python3.11 -m src.rl.rl_trainer --version ppo_v1 --epochs 4
 ```
 
-Models: `models/rl/ppo_v1/policy.npz` → synced to `gs://{bucket}/models/ppo_v1/`
-
-## Universe
-
-Full NSE main board (~2,335 symbols): `bash scripts/build_universe.sh`
-
-## Auth (evening)
+## Tests
 
 ```bash
-python3.11 -m src.auth.kite_totp      # headless TOTP
-# or
-python3.11 -m src.auth.kite_auth --auto
+python3.11 -m pytest tests/ -q
+bash scripts/audit_secrets.sh
 ```
 
-See `docs/EVOLUTION_LOG.md` and `docs/SYSTEM_TRACKER.md` for architecture and milestone tracking.
+## Reporting security issues
+
+Open a **private** GitHub security advisory on the repo, or email the maintainer listed on the GitHub org. Do **not** post API keys or account IDs in public issues.
+
+---
+
+*Built for autonomous NSE research. Use at your own risk.*

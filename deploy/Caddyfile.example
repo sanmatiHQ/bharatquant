@@ -1,0 +1,7 @@
+# Example Caddy reverse proxy — copy to deploy/Caddyfile and set your public host.
+# sslip.io: replace dots in IP with dashes, e.g. 203.0.113.10 → 203-0-113-10.sslip.io
+# Kite redirect URL: https://YOUR_PUBLIC_HOST/kite/callback
+
+YOUR_PUBLIC_HOST.sslip.io {
+	reverse_proxy 127.0.0.1:8080
+}

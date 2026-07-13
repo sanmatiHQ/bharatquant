@@ -32,7 +32,14 @@
 ### GCP production
 - `deploy/bharatquant.env.production` — `ENGINE_24X7`, ₹1500–2000 daily range, 15m timeout
 - `gcp_sync_secrets.sh` — restarts supervisor after secret sync
-- VM: `bharatquant-engine` @ `your-gcp-project-id` — independent of Mac
+- VM: `bharatquant-engine` on your GCP project — independent of Mac
+
+## 2026-07-13 — Open source release
+
+- Repo published as **public** under Apache 2.0
+- Secrets audit: `bash scripts/audit_secrets.sh`
+- Production hostnames / project IDs replaced with placeholders in tracked files
+- `deploy/Caddyfile` gitignored — use `deploy/Caddyfile.example` + `setup_https.sh`
 
 ## 2026-07-13 — 24×7 agent (observe + learn always on)
 
