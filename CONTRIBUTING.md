@@ -23,7 +23,8 @@ python3.11 scripts/setup_local.py
 
 ```bash
 bash scripts/audit_secrets.sh          # must exit 0
-python3.11 -m pytest tests/ -q         # all green
+python3.11 -m pytest tests/ -q         # unit tests (default)
+RUN_INTEGRATION=1 python3.11 -m pytest tests/ -q -m integration  # optional live feeds
 ```
 
 CI runs the same checks on every PR.

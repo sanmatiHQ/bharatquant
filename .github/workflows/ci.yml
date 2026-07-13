@@ -34,3 +34,4 @@ jobs:
           LLM_ENABLED: "false"
           KITE_API_KEY: test
           KITE_API_SECRET: test
+          RUN_INTEGRATION: "0"
