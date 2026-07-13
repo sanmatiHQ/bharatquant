@@ -246,6 +246,13 @@ async def run_supervisor() -> None:
         should_run, reason = evaluate_market_activity(db, nse)
         is_running = _pid_running(PID_FILE, "src.engine.main")
 
+        # Proactive token refresh (07:35 IST or when expired) — needs KITE_TOTP_SECRET
+        from ..ops.healthchecks import check_token
+        from ..ops.token_refresh import refresh_token_if_needed
+
+        if should_run:
+            await refresh_token_if_needed()
+
         if should_run and not is_running:
             start_engine_stack()
             _persist_state(db, "ACTIVE", reason)

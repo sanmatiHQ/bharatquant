@@ -22,6 +22,13 @@ async def handle_auth_event(event: MarketEvent, *, restart_feed: callable | None
         restart_feed()
         return True
 
+    from ..ops.token_refresh import refresh_token_if_needed
+
+    if await refresh_token_if_needed(force=True):
+        if restart_feed:
+            restart_feed()
+        return True
+
     user = os.getenv("KITE_USER_ID", "")
     pwd = os.getenv("KITE_PASSWORD", "")
     totp = os.getenv("KITE_TOTP_SECRET", "")
