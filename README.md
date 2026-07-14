@@ -4,9 +4,44 @@
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/sanmatiHQ/bharatquant/actions/workflows/ci.yml/badge.svg)](https://github.com/sanmatiHQ/bharatquant/actions/workflows/ci.yml)
 
-**Event-driven NSE agent** — Kite Connect execution, paper→live gate, RL guardrails, telemetry dashboard.
+**Event-driven NSE trading agent for India** — Zerodha Kite Connect, 52+ strategies, risk-adjusted promotion (Sortino/Calmar), paper→live gate, RL with shadow backtest, FastAPI telemetry dashboard.
 
 > **Not financial advice.** Research and education only. Trading involves risk of loss. You are responsible for SEBI, exchange, and broker compliance. **Run paper mode first.**
+
+---
+
+## What is BharatQuant?
+
+| | |
+|---|---|
+| **Type** | Open-source autonomous trading agent (Apache 2.0) |
+| **Market** | NSE India (CNC / MIS / NRML / options path scaffolded) |
+| **Broker** | [Zerodha Kite Connect](https://kite.trade/) — WebSocket ticks + REST orders |
+| **Language** | Python 3.11, asyncio, SQLite ledger |
+| **UI** | FastAPI dashboard (`/dashboard`) + SSE telemetry + owner admin |
+| **Deploy** | Local Mac/Linux or optional GCP GCE (`scripts/gcp_deploy.sh`) |
+| **Maturity** | **Paper-first research platform** — live capital gated; see [go-live checklist](docs/SYSTEM_TRACKER.md#deploy-policy-inviolable--owner-2026-07-14) |
+
+BharatQuant ingests **real Kite market data**, runs **50+ registered strategies** (momentum, opening range, institutional flow, corporate events, etc.) on an **EventBus**, sizes positions with **Kelly + VIX/regime gates**, and scores edges with **Sortino/Calmar composite fitness** — not raw PnL. Reinforcement learning (PPO) trains post-market and promotes only after **30-day shadow backtest** passes.
+
+### What it does
+
+- **Paper trading at real LTP** — fills use live ticks + `CostEngine` slippage/STT/brokerage (no synthetic prices)
+- **Strategy lifecycle** — candidacy → shadow → probation → full; correlation check before adding redundant edges
+- **Institutional signals** — NSE bulk deals, insider (PIT), corporate RSS, shareholding patterns → confidence tilt
+- **Risk stack** — daily loss halt, intraday drawdown breaker, kill switch, SEBI 10 OPS throttle, budget caps
+- **Observability** — session ledger, per-strategy PnL, RL sandbox, slippage analysis, decision audit trail
+
+### What it is **not**
+
+- Not a hosted SaaS or copy-trading product
+- Not guaranteed profitable — **no edge is promised**
+- Not LLM-on-order-path (optional Gemini for **research/briefs only**)
+- Not production-ready for live capital without completing the **test → prove → deploy** gates in [SYSTEM_TRACKER.md](docs/SYSTEM_TRACKER.md)
+
+### Keywords (for indexers)
+
+`algorithmic-trading` · `nse` · `india-stock-market` · `zerodha` · `kite-connect` · `quantitative-finance` · `paper-trading` · `reinforcement-learning` · `sortino` · `calmar` · `event-driven` · `fastapi` · `sebi-compliance` · `open-source`
 
 ---
 

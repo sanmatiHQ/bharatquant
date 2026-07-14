@@ -7,6 +7,46 @@
 
 ---
 
+## Deploy policy (inviolable — owner 2026-07-14)
+
+**Order:** Read → Probe → **Test** (pytest) → **Prove** (E2E / real-data log) → **Deploy** (`gcp_deploy.sh` only).
+
+| Step | Gate | Block deploy if |
+|------|------|-----------------|
+| **Test** | `python3.11 -m pytest` green | Any failure |
+| **Prove** | Item-specific deploy gate in layer table + EVOLUTION_LOG snippet | No proof log |
+| **Deploy** | `bash scripts/gcp_deploy.sh` end-to-end | `pre_deploy_smoke.sh` fails |
+| **Post** | `post_deploy_gate.sh` ALL PASS | Health / PID / Kite / HTTPS red |
+
+**Forbidden:** manual rsync/tar when automated gate fails; marking `deployed` from changelog trust; deploying capital-risk changes without independent diff review.
+
+**Go-live clock** (EVOLUTION_LOG § Hotfix 2): 6 clean paper weeks, ≥150 trades, composite ≥0.5, max DD ≤18% — **measurement only until gates pass**; not a deploy trigger.
+
+---
+
+## Layer summary (honest — 2026-07-14)
+
+| Layer | Name | Built (code) | Verified (pytest) | Deployed (VM proof) |
+|-------|------|--------------|-------------------|---------------------|
+| 0 | Foundation | partial | partial | partial |
+| 1 | Cloud infra | yes | smoke only | **yes** (GCE + systemd + HTTPS) |
+| 2 | Auth & connectivity | yes | partial | **partial** (OAuth token; ticks live) |
+| 3 | Event engine | yes | partial | partial |
+| 4 | Data ingestion | partial | partial | **partial** (NSE corp/bulk/insider) |
+| 5 | Strategy registry | yes (52+) | partial | **not proven** (no 6w paper) |
+| 6 | Agent brain | yes | **yes** (161 pytest) | **not proven** (pre-fix paper contaminated) |
+| 7 | Execution rails | yes | partial | partial (paper at real LTP) |
+| 8 | Risk & compliance | partial | partial | partial |
+| 9 | UI & observability | yes | partial | partial (dashboard live) |
+| 10 | Backtest & proof | walk-forward verified | partial | **open** (BQ-C1 clock not started clean) |
+| 11 | Autonomy command center | yes | partial | **code on VM — PnL proof invalid pre-fix** |
+| 12 | Open source | yes | **yes** (165 pytest + audit) | **yes** (scrub + force-push 1120347) |
+| CHERRY | Quant pickups | 8 verified | yes | partial |
+
+**Tracker drift:** Many Layer 6 rows still say `open` though code + tests exist — status means **not deploy-proven**, not "not built". Layer 11 `deployed` rows mean **code rsync'd to VM**, not go-live ready.
+
+---
+
 ## Charter
 
 | Field | Value |
@@ -37,15 +77,15 @@
 
 | ID | Component | Status | Depends | Deploy gate |
 |----|-----------|--------|---------|-------------|
-| BQ-10 | GCE e2-small `asia-south1` | open | — | SSH works |
-| BQ-11 | Static external IP attached | open | BQ-10 | IP documented |
-| BQ-12 | Zerodha Kite API IP whitelist | open | BQ-11 | Broker confirmation |
-| BQ-13 | 20GB persistent disk `/var/lib/bharatquant/` | open | BQ-10 | SQLite path writable |
-| BQ-14 | GCP Secret Manager (Kite, TOTP, password, Gemini) | open | BQ-10 | `gcloud secrets versions access` |
+| BQ-10 | GCE e2-small `asia-south1` | deployed | — | SSH works |
+| BQ-11 | Static external IP attached | deployed | BQ-10 | IP documented |
+| BQ-12 | Zerodha Kite API IP whitelist | deployed | BQ-11 | Broker confirmation |
+| BQ-13 | 20GB persistent disk `/var/lib/bharatquant/` | deployed | BQ-10 | SQLite path writable |
+| BQ-14 | GCP Secret Manager (Kite, TOTP, password, Gemini) | in_progress | BQ-10 | `gcloud secrets versions access` |
 | BQ-15 | GCS bucket nightly SQLite backup | in_progress | BQ-13 | Object in bucket after `SESSION_CLOSE` event |
-| BQ-16 | systemd `bharatquant-engine` Restart=always | in_progress | BQ-10 | `systemctl is-active` |
-| BQ-17 | systemd `bharatquant-api` (FastAPI :8080) | in_progress | BQ-16 | `curl /health` 200 |
-| BQ-18 | Deploy script `git pull` + restart | verified | BQ-16 | `scripts/deploy_vm.sh` |
+| BQ-16 | systemd `bharatquant-engine` Restart=always | deployed | BQ-10 | `systemctl is-active` |
+| BQ-17 | systemd `bharatquant-api` (FastAPI :8080) | deployed | BQ-16 | `curl /health` 200 |
+| BQ-18 | Deploy script `git pull` + restart | verified | BQ-16 | `gcp_deploy.sh` — **must pass smoke; no manual rsync** |
 | BQ-19 | Ops: non-trading health ping only | open | BQ-17 | Uptime alert fires on kill |
 
 ---
@@ -124,13 +164,13 @@
 
 | ID | Component | Status | Depends | Deploy gate |
 |----|-----------|--------|---------|-------------|
-| BQ-80 | Regime classifier (HMM: BULL/BEAR/SIDEWAYS/HIGH_VOL) | open | BQ-44, BQ-46 | Regime tag per day |
-| BQ-81 | Strategy router — regime → whitelist | open | BQ-60, BQ-80 | Wrong regime → strategy silent |
-| BQ-82 | Bayesian signal fusion → confidence | open | BQ-81 | Score 0–1 on each signal |
-| BQ-83 | Kelly / fractional Kelly sizing (capped) | open | BQ-82 | Position size in log |
-| BQ-84 | VaR + max drawdown circuit breaker | open | BQ-83 | Halt on breach |
-| BQ-85 | Nightly bandit — strategy weight update | open | BQ-90 | Weights change after P&L |
-| BQ-86 | Shadow trades (predict without execute) | open | BQ-90 | Calibration table |
+| BQ-80 | Regime classifier (HMM: BULL/BEAR/SIDEWAYS/HIGH_VOL) | verified | BQ-44, BQ-46 | Regime tag per day |
+| BQ-81 | Strategy router — regime → whitelist | verified | BQ-60, BQ-80 | Wrong regime → strategy silent |
+| BQ-82 | Bayesian signal fusion → confidence | in_progress | BQ-81 | Score 0–1 on each signal |
+| BQ-83 | Kelly / fractional Kelly sizing (capped) | verified | BQ-82 | Position size in log |
+| BQ-84 | VaR + max drawdown circuit breaker | verified | BQ-83 | Halt on breach |
+| BQ-85 | Nightly bandit — strategy weight update | verified | BQ-90 | Weights change after P&L |
+| BQ-86 | Shadow trades (predict without execute) | verified | BQ-90 | Calibration table |
 | BQ-87 | Optional Gemini Flash — news/earnings only | open | BQ-50 | ≤50 calls/day cap |
 | BQ-88 | Decision log — every signal with reason | open | BQ-82 | JSON audit trail |
 
@@ -140,15 +180,15 @@
 
 | ID | Component | Status | Depends | Deploy gate |
 |----|-----------|--------|---------|-------------|
-| BQ-90 | `strategy_ledger` + FIFO lots in SQLite | open | BQ-13 | Round-trip P&L correct |
-| BQ-91 | Paper broker — real LTP + slippage bps | open | BQ-23 | Fill price = Kite LTP ± slip |
+| BQ-90 | `strategy_ledger` + FIFO lots in SQLite | verified | BQ-13 | Round-trip P&L correct |
+| BQ-91 | Paper broker — real LTP + slippage bps | verified | BQ-23 | Fill price = Kite LTP ± slip |
 | BQ-92 | CNC (delivery) executor | open | BQ-91 | Paper BUY/SELL logged |
 | BQ-93 | MIS (intraday) executor | open | BQ-91, BQ-35 | Same-day close |
 | BQ-94 | NRML (F&O futures) executor | open | BQ-91 | Margin check |
 | BQ-95 | OPT (CE/PE) executor + greeks gate | open | BQ-94, BQ-47 | Defined-risk only |
 | BQ-96 | Live broker `place_order` path | open | BQ-92–95 | Disabled until flag |
 | BQ-97 | `trading.mode: paper \| live` config flag | open | BQ-96 | Live blocked in paper |
-| BQ-98 | Cost engine — STT, brokerage, GST, STCG/LTCG | open | BQ-90 | Known trade → correct tax |
+| BQ-98 | Cost engine — STT, brokerage, GST, STCG/LTCG | verified | BQ-90 | Known trade → correct tax |
 | BQ-99 | Margin pre-check on every signal | open | BQ-22 | Reject if insufficient |
 
 ---
@@ -189,7 +229,7 @@
 | ID | Component | Status | Depends | Deploy gate |
 |----|-----------|--------|---------|-------------|
 | BQ-C0 | Walk-forward backtest = same code path as live | verified | BQ-60 | `walk_forward.py` + FeatureStore |
-| BQ-C1 | Paper run continuous Days 1–6 | open | BQ-30–99 | 6 days `strategy_ledger` |
+| BQ-C1 | Paper run continuous Days 1–6 | in_progress | BQ-30–99 | 6 days `strategy_ledger` — **clock reset 2026-07-14 post fitness fix** |
 | BQ-C2 | Day 7 live enable + caps | open | BQ-C1, BQ-96 | User caps in config |
 | BQ-C3 | Rolling Sharpe / max DD dashboard | open | BQ-C1 | deferred post-W1 |
 
@@ -323,7 +363,7 @@
 | BQ-OS4 | Full `.env.example` (parity with production template) | deployed | BQ-03 | All `__PLACEHOLDER__` keys documented |
 | BQ-OS5 | CONTRIBUTING + SECURITY + issue/PR templates | deployed | BQ-OS2 | Community health files present |
 | BQ-OS6 | GitHub Actions CI (pytest + audit) | deployed | BQ-OS3 | `.github/workflows/ci.yml` green |
-| BQ-OS7 | Git history infra scrub | verified | BQ-OS3 | `scrub_git_history.sh` — no prod IP in `git log -p` |
+| BQ-OS7 | Git history infra scrub | deployed | BQ-OS3 | `scrub_git_history.sh` + `pre_deploy_smoke` PASS (1120347) |
 | BQ-OS8 | Infra placeholders in tracked tree | deployed | BQ-OS3 | No production VM IP / hostname in `git ls-files` |
 
 ---
