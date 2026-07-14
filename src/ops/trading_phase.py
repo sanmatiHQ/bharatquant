@@ -1,96 +1,50 @@
 """
-Trading lifecycle — paper learn on real data now; live ₹1500–2000/day after profitability gate.
+Trading lifecycle — paper learn on real data; live only after capital_gate passes.
 
 Phase 1 (default): paper_learn — real Kite ticks, paper orders, RL + strategy discovery.
-Phase 2 (manual): live_deploy — set TRADING_MODE=live after live_gate_eligible is true.
+Phase 2: live_deploy — TRADING_MODE=live only when evaluate_capital_gate() is eligible.
 """
 from __future__ import annotations
 
-import json
 import os
-import time
 from typing import Any
 
 from ..db.database import DB
-
-
-def _gate_min_return_pct() -> float:
-    return float(os.getenv("LIVE_GATE_MIN_PAPER_RETURN_PCT", "5"))
-
-
-def _gate_min_trades() -> int:
-    return int(os.getenv("LIVE_GATE_MIN_TRADE_COUNT", "20"))
-
-
-def _gate_lookback_days() -> int:
-    return int(os.getenv("LIVE_GATE_LOOKBACK_DAYS", "30"))
-
-
-def _get_setting(db: DB, key: str) -> str | None:
-    row = db._conn.execute("SELECT v FROM settings WHERE k=?", (key,)).fetchone()
-    return str(row["v"]) if row else None
-
-
-def _set_setting(db: DB, key: str, value: str) -> None:
-    with db.tx() as conn:
-        conn.execute(
-            "INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-            (key, value),
-        )
+from .capital_gate import evaluate_capital_gate, live_mode_allowed
+from .trading_config import resolved_trading_mode
 
 
 def paper_performance(db: DB) -> dict[str, Any]:
-    """Rolling paper PnL for live-gate evaluation."""
-    cutoff = int(time.time()) - _gate_lookback_days() * 86400
-    row = db._conn.execute(
-        """
-        SELECT
-          IFNULL(SUM(CASE WHEN side='SELL' THEN amount ELSE 0 END),0)
-          - IFNULL(SUM(CASE WHEN side='BUY' THEN amount ELSE 0 END),0) AS net_pnl,
-          COUNT(*) AS trade_count
-        FROM trades WHERE ts >= ?
-        """,
-        (cutoff,),
-    ).fetchone()
-    deployed = float(
-        db._conn.execute(
-            "SELECT IFNULL(SUM(amount),0) FROM trades WHERE side='BUY' AND ts >= ?",
-            (cutoff,),
-        ).fetchone()[0]
-    )
-    net = float(row["net_pnl"] or 0)
-    trades = int(row["trade_count"] or 0)
-    ret_pct = (net / deployed * 100) if deployed > 0 else 0.0
+    """Rolling paper PnL summary (informational — not the capital gate)."""
+    from .fitness_evidence import clock_start_ts, closed_sell_returns
+
+    start = clock_start_ts(db)
+    rets = closed_sell_returns(db, start)
+    net = sum(rets)
     return {
-        "lookback_days": _gate_lookback_days(),
-        "net_pnl_inr": round(net, 2),
-        "deployed_inr": round(deployed, 2),
-        "return_pct": round(ret_pct, 2),
-        "trade_count": trades,
+        "clock_start_ts": start,
+        "closed_sells": len(rets),
+        "mean_return": round(net / len(rets), 6) if rets else 0.0,
+        "note": "Use /api/fitness/proof for authoritative go-live gate.",
     }
 
 
 def evaluate_live_gate(db: DB) -> dict[str, Any]:
-    perf = paper_performance(db)
-    eligible = (
-        perf["trade_count"] >= _gate_min_trades()
-        and perf["return_pct"] >= _gate_min_return_pct()
-    )
-    if eligible:
-        _set_setting(db, "live_gate_eligible", "true")
-    mode = os.getenv("TRADING_MODE", "paper")
-    phase = "live_deploy" if mode == "live" else "paper_learn"
+    mode = resolved_trading_mode()
+    gate = evaluate_capital_gate(db)
+    allowed, reason, _ = live_mode_allowed(db)
     return {
-        "phase": phase,
+        "phase": "live_deploy" if mode == "live" else "paper_learn",
         "trading_mode": mode,
-        "live_gate_eligible": _get_setting(db, "live_gate_eligible") == "true" or eligible,
-        "live_gate_threshold_return_pct": _gate_min_return_pct(),
-        "live_gate_threshold_trades": _gate_min_trades(),
+        "live_gate_eligible": gate["eligible"],
+        "live_gate_allowed": allowed,
+        "live_gate_reason": reason,
+        "capital_gate": gate,
         "daily_live_budget_inr": f"{_env_min()}-{_env_max()}",
-        "paper_performance": perf,
+        "paper_performance": paper_performance(db),
         "note": (
-            "Paper learn on real market data until profitability gate clears; "
-            "then deploy ₹1500–2000/day real Zerodha capital (TRADING_MODE=live)."
+            "Capital gate requires 6 trading weeks, ≥150 closed sells, composite ≥0.5, "
+            f"max DD ≤{os.getenv('CAPITAL_MAX_DRAWDOWN_PCT', '18')}%, ≥5 promoted learned strategies."
         ),
     }
 
@@ -104,10 +58,4 @@ def _env_max() -> float:
 
 
 def assert_live_mode_allowed(db: DB) -> tuple[bool, str]:
-    """Block accidental live mode before profitability demonstrated."""
-    if os.getenv("TRADING_MODE", "paper") != "live":
-        return True, "paper"
-    status = evaluate_live_gate(db)
-    if status["live_gate_eligible"]:
-        return True, "live_gate_ok"
-    return False, "live_gate_not_met_set_TRADING_MODE=paper"
+    return live_mode_allowed(db)[:2]

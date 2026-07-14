@@ -305,6 +305,7 @@ async def main() -> None:
         await on_order_fill(db, event)
 
     async def on_session_close(event: MarketEvent) -> None:
+        await bars.flush_all()
         await pos_mon.on_session_close(event)
         try:
             from ..ops.budget_gate import rollover_at_session_close

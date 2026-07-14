@@ -1008,6 +1008,14 @@ Swapped fitness function from raw/cumulative PnL to **risk-adjusted, after-cost 
 - **`pre_deploy_smoke.sh` PASS** (165 pytest) — `gcp_deploy.sh` no longer requires manual rsync bypass
 - **Force-pushed** rewritten `main`; any local clones must `git fetch && git reset --hard origin/main`
 
+### Layer 3/4/6/7 closure batch (2026-07-14)
+- **`capital_gate.py` + `fitness_evidence.py`** — authoritative go-live evaluator (6 weeks, 150 sells, composite ≥0.5, DD ≤18%, 5 promoted learned); non-sticky; drawdown breach resets clock
+- **`/api/fitness/proof`** + `scripts/prove_layer6_vm.py` — VM structural proof; wired into `post_deploy_gate.sh`
+- **Layer 3** — exchange-aligned bar buckets + `flush_all()` on SESSION_CLOSE; session entry veto (BUY only when NSE OPEN)
+- **Layer 4** — VIX Yahoo fallback stores `india_vix_change_pct` not fake level; GIFT/FII already live
+- **Layer 7** — `trading_config.resolved_trading_mode()` unifies env + config.yaml; live blocked unless capital gate passes
+- **171 pytest** green
+
 ---
 
 ## 2026-07-12 — Engine crash loop / supervisor orphans (prior entry)

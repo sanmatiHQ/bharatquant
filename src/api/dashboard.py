@@ -521,6 +521,12 @@ def create_app() -> FastAPI:
 
         return evaluate_live_gate(db)
 
+    @app.get("/api/fitness/proof")
+    def api_fitness_proof():
+        from ..ops.capital_gate import evaluate_capital_gate
+
+        return evaluate_capital_gate(db)
+
     @app.post("/api/budget/approve")
     def api_budget_approve(body: BudgetApproveBody, request: Request):
         require_admin(request)

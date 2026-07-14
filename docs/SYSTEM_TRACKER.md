@@ -31,11 +31,11 @@
 | 0 | Foundation | partial | partial | partial |
 | 1 | Cloud infra | yes | smoke only | **yes** (GCE + systemd + HTTPS) |
 | 2 | Auth & connectivity | yes | partial | **partial** (OAuth token; ticks live) |
-| 3 | Event engine | yes | partial | partial |
-| 4 | Data ingestion | partial | partial | **partial** (NSE corp/bulk/insider) |
+| 3 | Event engine | yes | **partial** (aligned bars + session gate) | partial |
+| 4 | Data ingestion | partial | **yes** (GIFT/FII/VIX fixes) | **partial** (NSE corp/bulk/insider live) |
 | 5 | Strategy registry | yes (52+) | partial | **not proven** (no 6w paper) |
-| 6 | Agent brain | yes | **yes** (161 pytest) | **not proven** (pre-fix paper contaminated) |
-| 7 | Execution rails | yes | partial | partial (paper at real LTP) |
+| 6 | Agent brain | yes | **yes** (capital_gate + 171 pytest) | **gate wired — clock running** |
+| 7 | Execution rails | yes | partial | partial (paper at real LTP; live blocked by gate) |
 | 8 | Risk & compliance | partial | partial | partial |
 | 9 | UI & observability | yes | partial | partial (dashboard live) |
 | 10 | Backtest & proof | walk-forward verified | partial | **open** (BQ-C1 clock not started clean) |

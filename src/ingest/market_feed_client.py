@@ -206,9 +206,10 @@ def fetch_global_macro_bundle() -> dict[str, float]:
             out["usd_inr"] = fx
 
     if "india_vix" not in out:
-        vix = fetch_yahoo_chart_change_pct("^INDIAVIX")
-        if vix is not None:
-            out["india_vix"] = abs(vix)
+        # Yahoo returns % change — store separately; never substitute for VIX level
+        vix_chg = fetch_yahoo_chart_change_pct("^INDIAVIX")
+        if vix_chg is not None:
+            out["india_vix_change_pct"] = vix_chg
 
     us_vix = fetch_yahoo_chart_change_pct("^VIX")
     if us_vix is not None:

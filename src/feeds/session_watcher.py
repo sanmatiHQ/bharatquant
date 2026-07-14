@@ -18,9 +18,26 @@ NSE_HEADERS = {
 
 _STATUS_MAP = {
     "Pre-Open": EventType.SESSION_PRE_OPEN,
+    "Pre-open": EventType.SESSION_PRE_OPEN,
+    "Pre Open": EventType.SESSION_PRE_OPEN,
     "Open": EventType.SESSION_OPEN,
     "Close": EventType.SESSION_CLOSE,
+    "Closed": EventType.SESSION_CLOSE,
 }
+
+
+def _phase_from_status(status: str):
+    from ..ops.session_state import normalize_nse_status, set_session_phase
+
+    phase = normalize_nse_status(status)
+    set_session_phase(phase)
+    if phase == "PRE_OPEN":
+        return EventType.SESSION_PRE_OPEN
+    if phase == "OPEN":
+        return EventType.SESSION_OPEN
+    if phase == "CLOSED":
+        return EventType.SESSION_CLOSE
+    return _STATUS_MAP.get(status)
 
 
 async def fetch_nse_status() -> str:
@@ -48,7 +65,7 @@ async def poll_session_status(publish: Callable, interval_sec: float = 30.0) -> 
             status = await fetch_nse_status()
             if status != last:
                 last = status
-                et = _STATUS_MAP.get(status)
+                et = _phase_from_status(status)
                 if et:
                     await publish(MarketEvent(type=et, payload={"nse_status": status}))
                     logger.info("session_change", extra={"status": status})

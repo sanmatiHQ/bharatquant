@@ -87,4 +87,8 @@ CODE=$(curl -sk -o /dev/null -w "%{http_code}" "${BASE_URL}/dashboard" 2>/dev/nu
 [[ "$CODE" == "200" ]] || fail "HTTPS /dashboard → $CODE"
 ok "HTTPS dashboard 200"
 
+echo "==> post_deploy_gate: layer6 structural proof"
+_ssh --command "sudo -u bharatquant bash -lc 'set -a; source /etc/bharatquant/env; set +a; cd /opt/bharatquant/zerodha-momo-rl; python3.11 scripts/prove_layer6_vm.py'" || fail "prove_layer6_vm.py"
+ok "layer6 capital gate proof"
+
 echo "==> post_deploy_gate: ALL PASS"

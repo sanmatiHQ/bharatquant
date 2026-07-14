@@ -22,6 +22,7 @@ class _Bar:
     vwap_num: float = 0.0
     vwap_den: float = 0.0
     start_ts: int = 0
+    bucket_id: int = 0
 
 
 _INTERVALS: Tuple[Tuple[int, EventType], ...] = (
@@ -187,12 +188,13 @@ class BarAggregator:
         vol = float(event.payload.get("raw", {}).get("volume_traded", 0) or 0)
         now = event.ts or int(time.time())
         for bar_sec, ev_type in _INTERVALS:
+            bucket = now // bar_sec
             key = (sym, bar_sec)
             bar = self._bars.get(key)
-            if bar is None or now - bar.start_ts >= bar_sec:
+            if bar is None or bar.bucket_id != bucket:
                 if bar and bar.close > 0:
                     await self._emit_bar(sym, bar, ev_type)
-                bar = _Bar(open=px, high=px, low=px, close=px, start_ts=now)
+                bar = _Bar(open=px, high=px, low=px, close=px, start_ts=now, bucket_id=bucket)
                 self._bars[key] = bar
             bar.high = max(bar.high, px)
             bar.low = min(bar.low, px)
@@ -216,6 +218,15 @@ class BarAggregator:
                     )
                 )
             self._last_vwap_side[sym] = side
+
+    async def flush_all(self) -> None:
+        """Emit open bars — call on SESSION_CLOSE so boundaries don't wait for next tick."""
+        for (sym, bar_sec), bar in list(self._bars.items()):
+            if bar.close <= 0:
+                continue
+            ev_type = next((et for sec, et in _INTERVALS if sec == bar_sec), EventType.BAR_CLOSE_5M)
+            await self._emit_bar(sym, bar, ev_type)
+        self._bars.clear()
 
     def _bar_features(self, sym: str, bar: _Bar) -> dict:
         """Literature-ready features: Donchian, IBS, NR7, z-score, EMA cross, ret_5d."""

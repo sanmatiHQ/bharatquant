@@ -386,3 +386,12 @@ CREATE TABLE IF NOT EXISTS discovery_outcomes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_discovery_outcomes_rule ON discovery_outcomes(rule_id);
+
+CREATE TABLE IF NOT EXISTS capital_gate_evaluations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  eligible INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_capital_gate_ts ON capital_gate_evaluations(ts);

@@ -337,6 +337,21 @@ class ExecutionEngine:
                 "reason": reason,
             })
             return
+        from ..ops.session_state import entries_allowed
+
+        if chosen.action == "BUY" and not entries_allowed():
+            reason = "session_not_open"
+            logger.info("session_entry_veto", extra={"symbol": chosen.symbol})
+            self._record_signal(chosen, event, False)
+            self._rl.record_skip(self.router.ctx, chosen, reason=reason)
+            persist_decision(self.db, {
+                "action": "VETO",
+                "strategy": chosen.strategy_id,
+                "symbol": chosen.symbol,
+                "signal": chosen.action,
+                "reason": reason,
+            })
+            return
         from ..ops.execution_cooldown import can_place_order
 
         if chosen.action in ("BUY", "SELL"):
