@@ -79,6 +79,18 @@ def analyze_today_slippage(db: DB) -> dict[str, Any]:
                 "llm_bias_at_execution": llm_bias,
             }
         )
+        from .slippage_parity import record_slippage_pair
+
+        record_slippage_pair(
+            db,
+            symbol=sym,
+            side=str(t["side"]),
+            predicted_price=target,
+            actual_price=exec_px,
+            qty=int(t["qty"]),
+            strategy_id=str(leg["strategy_id"]) if leg and leg["strategy_id"] else "",
+            source="eod_reconcile",
+        )
 
     summary = {
         "ts": int(time.time()),

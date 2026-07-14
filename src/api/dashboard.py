@@ -533,6 +533,36 @@ def create_app() -> FastAPI:
 
         return {"results": list_historical_screen(db, cleared_only=cleared_only)}
 
+    @app.get("/api/risk/slippage_bias")
+    def api_slippage_bias():
+        from ..ops.slippage_parity import running_bias
+
+        return running_bias(db)
+
+    @app.get("/api/risk/portfolio_greeks")
+    def api_portfolio_greeks():
+        from ..risk.portfolio_greeks import aggregate_portfolio_greeks, stress_book_loss_inr
+
+        g = aggregate_portfolio_greeks(db)
+        equity_row = db._conn.execute("SELECT IFNULL(SUM(delta),0) c FROM cash_ledger").fetchone()
+        cash = float(equity_row["c"] or 0)
+        pos_val = float(
+            db._conn.execute(
+                "SELECT IFNULL(SUM(qty*avg_price),0) v FROM positions WHERE qty>0"
+            ).fetchone()["v"]
+            or 0
+        )
+        equity = cash + pos_val
+        return {
+            "greeks": {
+                "delta": g.delta,
+                "gamma": g.gamma,
+                "vega": g.vega,
+                "theta": g.theta,
+            },
+            "stress": stress_book_loss_inr(db, equity),
+        }
+
     @app.post("/api/budget/approve")
     def api_budget_approve(body: BudgetApproveBody, request: Request):
         require_admin(request)

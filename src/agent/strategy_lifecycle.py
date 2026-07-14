@@ -1,4 +1,4 @@
-"""Strategy lifecycle — candidacy → probation → full → auto-demotion."""
+"""Strategy lifecycle — candidacy → probation → full → auto-demotion (all strategies)."""
 from __future__ import annotations
 
 import logging
@@ -21,9 +21,10 @@ _MIN_SORTINO_PROMOTE = float(os.getenv("LIFECYCLE_MIN_SORTINO", "0.15"))
 _MIN_CALMAR_PROMOTE = float(os.getenv("LIFECYCLE_MIN_CALMAR", "0.35"))
 _DEMOTE_SORTINO = float(os.getenv("LIFECYCLE_DEMOTE_SORTINO", "0.0"))
 _DEMOTE_CALMAR = float(os.getenv("LIFECYCLE_DEMOTE_CALMAR", "0.25"))
+_STRUCTURAL_LOSS_DEMOTE = int(os.getenv("LIFECYCLE_STRUCTURAL_LOSS_DEMOTE", "3"))
 
-# Hand-written registry strategies ship at full allocation
-_CORE_FULL = {
+# One-time grandfather set — existing hand-written strategies keep full allocation today
+_GRANDFATHER_FULL = {
     "opening_range", "affordable_momentum", "fast_snapshot", "vwap_reversion",
     "combined_momentum", "turtle_breakout", "gift_gap", "short_term_reversal",
     "pairs_stat_arb", "bulk_accumulation", "insider_cluster", "quality_momentum",
@@ -36,11 +37,43 @@ _CORE_FULL = {
 
 
 def _default_state(strategy_id: str) -> LifecycleState:
-    if strategy_id.startswith(("learned_", "custom_")):
-        return "candidacy"
-    if strategy_id in _CORE_FULL:
+    if strategy_id == "signal_combiner":
+        return "full"
+    if strategy_id in _GRANDFATHER_FULL:
         return "full"
     return "candidacy"
+
+
+def _is_grandfathered(strategy_id: str) -> int:
+    return 1 if strategy_id in _GRANDFATHER_FULL else 0
+
+
+def migrate_grandfather_existing(db: DB) -> int:
+    """Mark deployed core strategies as grandfathered full — run once at boot."""
+    n = 0
+    now = int(time.time())
+    with db.tx() as conn:
+        for sid in _GRANDFATHER_FULL:
+            row = conn.execute(
+                "SELECT strategy_id FROM strategy_lifecycle WHERE strategy_id=?", (sid,)
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE strategy_lifecycle SET grandfathered_full=1 WHERE strategy_id=?",
+                    (sid,),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO strategy_lifecycle(
+                      strategy_id, state, entered_ts, shadow_signals, probation_trades,
+                      last_fitness, grandfathered_full
+                    ) VALUES (?,?,?,?,?,?,?)
+                    """,
+                    (sid, "full", now, 0, 0, 0.0, 1),
+                )
+            n += 1
+    return n
 
 
 def ensure_lifecycle_row(db: DB, strategy_id: str) -> str:
@@ -50,14 +83,17 @@ def ensure_lifecycle_row(db: DB, strategy_id: str) -> str:
     if row:
         return str(row["state"])
     state = _default_state(strategy_id)
+    gf = _is_grandfathered(strategy_id)
     now = int(time.time())
     with db.tx() as conn:
         conn.execute(
             """
-            INSERT INTO strategy_lifecycle(strategy_id, state, entered_ts, shadow_signals, probation_trades, last_fitness)
-            VALUES (?,?,?,?,?,?)
+            INSERT INTO strategy_lifecycle(
+              strategy_id, state, entered_ts, shadow_signals, probation_trades,
+              last_fitness, grandfathered_full
+            ) VALUES (?,?,?,?,?,?,?)
             """,
-            (strategy_id, state, now, 0, 0, 0.0),
+            (strategy_id, state, now, 0, 0, 0.0, gf),
         )
     return state
 
@@ -83,7 +119,6 @@ def can_allocate_capital(db: DB, strategy_id: str) -> tuple[bool, str]:
 
 
 def historical_screen_cleared(db: DB, strategy_id: str) -> bool:
-    """Pre-screen flag for candidacy priority — not a promotion substitute."""
     from ..intelligence.historical_screen import get_historical_screen
 
     row = get_historical_screen(db, strategy_id)
@@ -141,17 +176,21 @@ def _passes_promotion_gate(fit: RiskFitness, wins: int, n: int, *, min_samples: 
 
 
 def evaluate_lifecycle_transitions(db: DB) -> list[dict]:
-    """Nightly/learning-pass governance — promote or demote by risk-adjusted fitness."""
+    """Nightly governance — promote or demote; grandfathered full must re-earn status."""
     from ..agent.strategy_stats import strategy_performance
+    from ..ops.loss_ledger import structural_loss_count
 
     results: list[dict] = []
-    rows = db._conn.execute("SELECT strategy_id, state, shadow_signals, probation_trades FROM strategy_lifecycle").fetchall()
+    rows = db._conn.execute(
+        "SELECT strategy_id, state, shadow_signals, probation_trades, grandfathered_full FROM strategy_lifecycle"
+    ).fetchall()
     for r in rows:
         sid = str(r["strategy_id"])
         state = str(r["state"])
         fit = strategy_fitness(db, sid)
         perf = strategy_performance(db, sid)
         changed = False
+        struct_losses = structural_loss_count(db, sid, days=14)
 
         if state == "candidacy":
             if int(r["shadow_signals"]) >= _CANDIDACY_MIN_SIGNALS and _passes_promotion_gate(
@@ -161,12 +200,19 @@ def evaluate_lifecycle_transitions(db: DB) -> list[dict]:
                 changed = True
                 state = "probation"
         elif state == "probation":
-            if int(r["probation_trades"]) >= _PROBATION_MIN_TRADES and _passes_promotion_gate(fit, perf.wins, perf.sample_count):
+            if int(r["probation_trades"]) >= _PROBATION_MIN_TRADES and _passes_promotion_gate(
+                fit, perf.wins, perf.sample_count
+            ):
                 _transition(db, sid, "full", fit.composite)
                 changed = True
                 state = "full"
         elif state == "full":
-            if perf.sample_count >= 20 and (fit.sortino < _DEMOTE_SORTINO or fit.calmar < _DEMOTE_CALMAR):
+            demote = False
+            if struct_losses >= _STRUCTURAL_LOSS_DEMOTE and perf.sample_count >= 10:
+                demote = True
+            elif perf.sample_count >= 20 and (fit.sortino < _DEMOTE_SORTINO or fit.calmar < _DEMOTE_CALMAR):
+                demote = True
+            if demote:
                 _transition(db, sid, "demoted", fit.composite)
                 changed = True
                 state = "demoted"
@@ -181,5 +227,14 @@ def evaluate_lifecycle_transitions(db: DB) -> list[dict]:
                     "UPDATE strategy_lifecycle SET last_fitness=? WHERE strategy_id=?",
                     (fit.composite, sid),
                 )
-        results.append({"strategy_id": sid, "state": state, "fitness": fit.composite, "changed": changed})
+        results.append(
+            {
+                "strategy_id": sid,
+                "state": state,
+                "fitness": fit.composite,
+                "changed": changed,
+                "structural_losses_14d": struct_losses,
+                "grandfathered": int(r["grandfathered_full"] or 0),
+            }
+        )
     return results

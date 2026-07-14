@@ -238,6 +238,20 @@ def can_deploy(db: DB, amount_inr: float) -> tuple[bool, str]:
     return False, f"daily_budget_cap remaining=₹{remaining:.0f} need=₹{amount_inr:.0f}"
 
 
+def budget_audit_context(db: DB, amount_inr: float = 0.0) -> dict[str, Any]:
+    """Structured budget snapshot for veto logging and dashboard audit."""
+    st = budget_status(db)
+    return {
+        "effective_max_inr": st["daily_max_inr"],
+        "approved_max_inr": st["daily_base_inr"],
+        "rolled_inr": st["rolled_inr"],
+        "deployed_today_inr": st["deployed_today_inr"],
+        "remaining_inr": st["remaining_inr"],
+        "requested_inr": amount_inr,
+        "rollover_mode": st["rollover_mode"],
+    }
+
+
 def request_budget_increase(db: DB, requested_max: float, reason: str) -> dict[str, Any]:
     """Agent requests higher daily limit — user has 15m to approve or request auto-expires."""
     expire_pending_if_stale(db)

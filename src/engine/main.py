@@ -451,6 +451,13 @@ async def main() -> None:
     except Exception:
         logger.exception("startup_stipend_failed")
 
+    try:
+        from ..agent.strategy_lifecycle import migrate_grandfather_existing
+
+        logger.info("lifecycle_grandfather", extra={"count": migrate_grandfather_existing(db)})
+    except Exception:
+        logger.exception("lifecycle_grandfather_failed")
+
     async def _startup_screen() -> None:
         try:
             await ensure_fresh_screen(db, universe, logs_dir, on_complete=_restart_feed)

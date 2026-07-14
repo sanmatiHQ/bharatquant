@@ -44,6 +44,7 @@ class DB:
             "ALTER TABLE positions ADD COLUMN sector TEXT DEFAULT ''",
             "ALTER TABLE trades ADD COLUMN order_id TEXT",
             "ALTER TABLE depth_snapshots ADD COLUMN obi REAL",
+            "ALTER TABLE strategy_lifecycle ADD COLUMN grandfathered_full INTEGER DEFAULT 0",
         ]
         for stmt in patches:
             try:

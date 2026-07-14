@@ -50,6 +50,18 @@ from .literature_strategies import (
     TurnaroundTuesdayStrategy,
     ZScoreReversionStrategy,
 )
+from .candidacy_signals import (
+    AsmGsmEntryStrategy,
+    CircuitBandFlowStrategy,
+    FoBanUnwindStrategy,
+    GiftBasisConvergenceStrategy,
+    IndexReconstitutionStrategy,
+    PeadContinuationStrategy,
+    PromoterPledgeSignalStrategy,
+    RegulatoryCatalystStrategy,
+    RetailContrarianFadeStrategy,
+    SipFlowSeasonalityStrategy,
+)
 from .calendar_activity import CalendarActivityStrategy
 from .sentiment_regime import SentimentRegimeStrategy
 from .nse_localized import (
@@ -118,6 +130,16 @@ _BUILTIN: dict[str, Type[Strategy]] = {
     "monday_effect_in": MondayEffectIndiaStrategy,
     "calendar_activity": CalendarActivityStrategy,
     "sentiment_regime": SentimentRegimeStrategy,
+    "index_reconstitution": IndexReconstitutionStrategy,
+    "asm_gsm_entry": AsmGsmEntryStrategy,
+    "fo_ban_unwind": FoBanUnwindStrategy,
+    "promoter_pledge_signal": PromoterPledgeSignalStrategy,
+    "sip_flow_seasonality": SipFlowSeasonalityStrategy,
+    "gift_basis_convergence": GiftBasisConvergenceStrategy,
+    "retail_contrarian_fade": RetailContrarianFadeStrategy,
+    "pead_continuation": PeadContinuationStrategy,
+    "circuit_band_flow": CircuitBandFlowStrategy,
+    "regulatory_catalyst": RegulatoryCatalystStrategy,
 }
 
 
@@ -138,7 +160,14 @@ class StrategyRegistry:
             cls = _BUILTIN.get(sid)
             if not cls:
                 continue
-            if sid in ("strategy_lab", "sector_rotation", "options_greeks", "pairs_stat_arb", "affordable_momentum"):
+            if sid in (
+                "strategy_lab",
+                "sector_rotation",
+                "options_greeks",
+                "pairs_stat_arb",
+                "affordable_momentum",
+                "asm_gsm_entry",
+            ):
                 self._strategies.append(cls(db=db))
             else:
                 self._strategies.append(cls())

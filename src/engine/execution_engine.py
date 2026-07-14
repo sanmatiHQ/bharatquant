@@ -145,6 +145,8 @@ class ExecutionEngine:
         return qty if qty * ltp <= cap_rupees + 0.01 else max(0, int(cap_rupees // ltp))
 
     def _can_buy(self, chosen: Signal, sym: str) -> bool:
+        from ..agent.strategy_lifecycle import historical_screen_cleared
+
         opportunistic = (
             "insider_cluster",
             "bulk_accumulation",
@@ -154,8 +156,12 @@ class ExecutionEngine:
             "fast_snapshot",
             "gift_gap",
             "vwap_reversion",
+            "connors_ibs",
+            "zscore_reversion",
         )
         if chosen.strategy_id in opportunistic:
+            return True
+        if historical_screen_cleared(self.db, chosen.strategy_id):
             return True
         if chosen.rail.upper() == "MIS":
             return True
@@ -551,6 +557,18 @@ class ExecutionEngine:
                         )
                         self.db.add_cash(ts, -cost, f"buy:{sym}")
                         consume_rolled_on_deploy(self.db, cost)
+                        from ..ops.slippage_parity import record_slippage_pair
+
+                        record_slippage_pair(
+                            self.db,
+                            symbol=sym,
+                            side="BUY",
+                            predicted_price=ltp,
+                            actual_price=exec_px,
+                            qty=qty,
+                            strategy_id=chosen.strategy_id,
+                            source=os.getenv("TRADING_MODE", "paper"),
+                        )
                         open_lot(self.db, sym, qty, exec_px, ts, chosen.rail, tid)
                         from ..ops.execution_cooldown import mark_order_placed
 
@@ -605,11 +623,46 @@ class ExecutionEngine:
                     fills, tax_class = close_lots_fifo(self.db, sym, qty, exec_px, ts, self.costs)
                     proceeds = exec_px * qty - fees
                     realized_pnl = sum(f.pnl for f in fills) - fees
-                    self.db.record_trade(
+                    sell_tid = self.db.record_trade(
                         ts, sym, "SELL", qty, exec_px, proceeds, chosen.reason, fees, tax_class, order_id=order_id
                     )
                     self.db.add_cash(ts, proceeds, f"sell:{sym}")
                     self._update_strategy_pnl(chosen.strategy_id, realized_pnl)
+                    from ..ops.symbol_session_cooldown import record_losing_close
+                    from ..ops.loss_ledger import record_closed_loss
+                    from ..ops.slippage_parity import record_slippage_pair
+
+                    slip_inr = (exec_px - ltp) * qty
+                    slip_bps = (exec_px - ltp) / ltp * 10_000 if ltp > 0 else 0.0
+                    record_slippage_pair(
+                        self.db,
+                        symbol=sym,
+                        side="SELL",
+                        predicted_price=ltp,
+                        actual_price=exec_px,
+                        qty=qty,
+                        strategy_id=chosen.strategy_id,
+                        source=os.getenv("TRADING_MODE", "paper"),
+                    )
+                    if realized_pnl < 0:
+                        record_losing_close(self.db, sym, realized_pnl, chosen.strategy_id)
+                        cost_drag = abs(slip_inr) / max(1.0, abs(realized_pnl)) * 100.0
+                        signal_fail = max(0.0, 100.0 - cost_drag)
+                        record_closed_loss(
+                            self.db,
+                            trade_id=sell_tid,
+                            symbol=sym,
+                            strategy_id=chosen.strategy_id,
+                            pnl_inr=realized_pnl,
+                            regime_entry=str(getattr(self.router.ctx, "regime", "NEUTRAL")),
+                            regime_exit=str(getattr(self.router.ctx, "regime", "NEUTRAL")),
+                            stop_designed="stop" in chosen.reason.lower(),
+                            stop_slipped=abs(slip_bps) > 20,
+                            slippage_inr=slip_inr,
+                            slippage_bps=slip_bps,
+                            signal_failure_pct=signal_fail,
+                            cost_drag_pct=cost_drag,
+                        )
                     self.router.record_return(realized_pnl / max(1.0, port.get("total_equity", 1)))
                     from ..ops.execution_cooldown import mark_order_placed
 

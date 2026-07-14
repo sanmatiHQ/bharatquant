@@ -62,6 +62,12 @@ def settle_pending_fill(
 
     if side == "BUY":
         amount = fill_price * qty + fees
+        from ..ops.budget_gate import can_deploy
+
+        ok_b, b_reason = can_deploy(db, amount)
+        if not ok_b:
+            logger.warning("pending_fill_budget_blocked", extra={"order_id": order_id, "reason": b_reason})
+            return False
         tid = db.record_trade(ts, sym, "BUY", qty, fill_price, amount, row["reason"], fees, "NA", order_id=order_id)
         db.add_cash(ts, -amount, f"buy:{sym}")
         consume_rolled_on_deploy(db, amount)

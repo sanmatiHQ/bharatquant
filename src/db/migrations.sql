@@ -413,3 +413,50 @@ CREATE TABLE IF NOT EXISTS historical_screen (
 );
 
 CREATE INDEX IF NOT EXISTS idx_historical_screen_cleared ON historical_screen(cleared, composite DESC);
+
+CREATE TABLE IF NOT EXISTS symbol_session_cooldown (
+  symbol TEXT NOT NULL,
+  session_day TEXT NOT NULL,
+  until_ts INTEGER NOT NULL,
+  last_loss_pnl REAL DEFAULT 0,
+  last_strategy_id TEXT DEFAULT '',
+  updated_ts INTEGER NOT NULL,
+  PRIMARY KEY(symbol, session_day)
+);
+
+CREATE TABLE IF NOT EXISTS loss_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  trade_id INTEGER,
+  symbol TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  pnl_inr REAL NOT NULL,
+  regime_entry TEXT DEFAULT '',
+  regime_exit TEXT DEFAULT '',
+  stop_designed INTEGER DEFAULT 0,
+  stop_slipped INTEGER DEFAULT 0,
+  slippage_inr REAL DEFAULT 0,
+  slippage_bps REAL DEFAULT 0,
+  signal_failure_pct REAL DEFAULT 0,
+  cost_drag_pct REAL DEFAULT 0,
+  structural_failure INTEGER DEFAULT 0,
+  meta_json TEXT DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_loss_ledger_strategy ON loss_ledger(strategy_id, ts DESC);
+
+CREATE TABLE IF NOT EXISTS slippage_parity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL,
+  qty INTEGER NOT NULL,
+  predicted_price REAL NOT NULL,
+  actual_price REAL NOT NULL,
+  signed_bps REAL NOT NULL,
+  slippage_inr REAL NOT NULL,
+  strategy_id TEXT DEFAULT '',
+  source TEXT DEFAULT 'paper'
+);
+
+CREATE INDEX IF NOT EXISTS idx_slippage_parity_ts ON slippage_parity(ts DESC);

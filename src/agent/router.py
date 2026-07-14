@@ -1,6 +1,7 @@
 """Fuse strategy signals — pick best after costs; RL boosts when policy agrees."""
 from __future__ import annotations
 
+import logging
 import os
 from typing import List, Optional
 
@@ -18,6 +19,8 @@ from ..db.database import DB
 from ..rl.rl_agent import RLAgent
 from ..rl.state_encoder import encode_state
 from .signal_combiner import SignalCombiner
+
+logger = logging.getLogger("bharatquant.router")
 
 
 class AgentRouter:
@@ -96,10 +99,11 @@ class AgentRouter:
             learn_mult = strategy_weight_multiplier(learned, s.strategy_id)
             if self.db:
                 from ..agent.strategy_lifecycle import get_lifecycle_state
-                from ..intelligence.historical_screen import candidacy_priority_multiplier
+                from ..intelligence.historical_screen import screen_priority_multiplier
 
+                learn_mult *= screen_priority_multiplier(self.db, s.strategy_id)
                 if get_lifecycle_state(self.db, s.strategy_id) == "candidacy":
-                    learn_mult *= candidacy_priority_multiplier(self.db, s.strategy_id)
+                    learn_mult *= 1.05
             scored.append((conf * w * learn_mult, s))
         if not scored:
             return None
@@ -209,12 +213,21 @@ class AgentRouter:
             return False, "calendar_mis_blocked"
         if signal.action == "BUY" and self.db:
             from ..intelligence.strategy_correlation import is_strategy_disabled
+            from ..ops.symbol_session_cooldown import can_reenter_symbol
 
             if is_strategy_disabled(self.db, signal.strategy_id):
                 return False, "strategy_disabled_correlation"
+            ok_sym, sym_reason = can_reenter_symbol(
+                self.db,
+                signal.symbol,
+                strategy_id=signal.strategy_id,
+                confidence=signal.confidence,
+            )
+            if not ok_sym:
+                return False, sym_reason
         max_trade = float(os.getenv("MAX_RUPEES_PER_TRADE", "1000"))
         if signal.action == "BUY":
-            from ..agent.strategy_lifecycle import allocation_fraction, can_allocate_capital, record_probation_trade
+            from ..agent.strategy_lifecycle import allocation_fraction, can_allocate_capital
 
             ok_lc, lc_reason = can_allocate_capital(self.db, signal.strategy_id) if self.db else (True, "ok")
             if not ok_lc:
@@ -233,6 +246,25 @@ class AgentRouter:
             if kelly_r < 50:
                 return False, "kelly_too_small"
             if self.db:
+                from ..ops.budget_gate import budget_audit_context, can_deploy
+
+                ok_budget, budget_reason = can_deploy(self.db, kelly_r)
+                if not ok_budget:
+                    logger.info(
+                        "budget_veto_risk",
+                        extra={"reason": budget_reason, **budget_audit_context(self.db, kelly_r)},
+                    )
+                    return False, budget_reason
+                if signal.rail.upper() == "OPT":
+                    from ..risk.portfolio_greeks import greeks_within_caps, stress_book_loss_inr
+
+                    naked = signal.action == "SELL" and "sell" in signal.reason.lower()
+                    ok_g, g_reason = greeks_within_caps(self.db, add_delta=kelly_r * 0.01, naked_short=naked)
+                    if not ok_g:
+                        return False, g_reason
+                    stress = stress_book_loss_inr(self.db, float(portfolio.get("total_equity", 0)))
+                    if not stress["pass"]:
+                        return False, "fo_stress_limit"
                 ok_sec, sec_reason = can_add_sector(self.db, signal.symbol, kelly_r)
                 if not ok_sec:
                     return False, sec_reason
