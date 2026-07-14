@@ -92,6 +92,49 @@ def _forward_return(closes: list[float], idx: int, horizon: int = 3) -> float | 
     return (c1 - c0) / c0
 
 
+def forward_returns_for_discovery_rule(
+    db: DB,
+    symbol: str,
+    rule: dict[str, Any],
+    *,
+    lookback_days: int = 14,
+    min_samples: int = 20,
+) -> list[float]:
+    """Recompute actual per-hit forward returns for one mined rule (not repeated means)."""
+    cutoff = int(time.time()) - lookback_days * 86400
+    rows = db._conn.execute(
+        """
+        SELECT ts, open, high, low, close, volume FROM bar_log
+        WHERE symbol=? AND interval='5m' AND ts >= ?
+        ORDER BY ts
+        """,
+        (symbol, cutoff),
+    ).fetchall()
+    if len(rows) < 40:
+        return []
+    bars = list(rows)
+    closes = [float(b["close"]) for b in bars]
+    highs = [float(b["high"]) for b in bars]
+    lows = [float(b["low"]) for b in bars]
+    vols = [float(b["volume"] or 0) for b in bars]
+    vol_avg = sum(vols) / len(vols) if vols else 1.0
+    field = str(rule.get("field", ""))
+    op = str(rule.get("op", "gt"))
+    th = float(rule.get("threshold", 0))
+    returns: list[float] = []
+    for i in range(20, len(bars) - 4):
+        feats = _bar_features_at(bars, closes, highs, lows, vols, vol_avg, i)
+        val = feats.get(field, 0)
+        ok = val > th if op == "gt" else val < th
+        if not ok:
+            continue
+        fr = _forward_return(closes, i, 3)
+        if fr is None:
+            continue
+        returns.append(fr)
+    return returns if len(returns) >= min_samples else []
+
+
 def mine_bar_log(db: DB, lookback_days: int = 14, min_samples: int = 20) -> list[dict[str, Any]]:
     """Scan bar_log 5m bars; score simple rules by forward 15m return."""
     cutoff = int(time.time()) - lookback_days * 86400

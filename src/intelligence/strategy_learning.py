@@ -180,16 +180,20 @@ def promote_discovery_rules(db: DB, *, min_win_rate: float = 0.54, limit: int = 
             continue
         if binomial_edge_p_value(wins, n) > 0.05:
             continue
-        proxy_rets = [float(r["avg_return"]) if float(r["win_rate"]) >= 0.5 else -abs(float(r["avg_return"]))] * min(n, 30)
-        fit = fitness_from_returns(proxy_rets)
-        if fit.composite <= 0 or fit.sortino < float(os.getenv("LIFECYCLE_MIN_SORTINO", "0.15")):
-            continue
-        if len(promoted_specs) >= limit:
-            break
         try:
             rule = json.loads(r["conditions"])
         except json.JSONDecodeError:
             continue
+        from .strategy_discovery import forward_returns_for_discovery_rule
+
+        returns = forward_returns_for_discovery_rule(db, str(r["symbol"] or ""), rule)
+        if len(returns) < 20:
+            continue
+        fit = fitness_from_returns(returns, periods_per_year=float(os.getenv("DISCOVERY_PERIODS_PER_YEAR", "6552")))
+        if fit.composite <= 0 or fit.sortino < float(os.getenv("LIFECYCLE_MIN_SORTINO", "0.15")):
+            continue
+        if len(promoted_specs) >= limit:
+            break
         field = str(rule.get("field", ""))
         if not field:
             continue

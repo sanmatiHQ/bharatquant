@@ -167,11 +167,12 @@ def test_binomial_rejects_noise():
     assert binomial_edge_p_value(18, 25) < 0.05
 
 
-def test_promote_discovery_rejects_insignificant_edge(db):
+def test_promote_discovery_rejects_synthetic_rubber_stamp(db):
+    """Repeated mean must not inflate Sortino — promotion requires real bar_log returns."""
     db._conn.execute(
         """
         INSERT INTO strategy_discovery(rule_id, symbol, conditions, win_rate, avg_return, sample_count, discovered_ts, promoted)
-        VALUES ('noise_rule', 'INFY', ?, 0.52, 0.1, 25, ?, 0)
+        VALUES ('noise_rule', 'INFY', ?, 0.72, 0.4, 25, ?, 0)
         """,
         (json.dumps({"field": "ibs", "op": "lt", "threshold": 0.2}), int(time.time())),
     )
@@ -180,12 +181,19 @@ def test_promote_discovery_rejects_insignificant_edge(db):
 
 
 def test_promote_discovery_accepts_significant_edge(db):
+    ts = int(time.time()) - 7200
+    for i in range(50):
+        close = 100.0 + i * 1.5
+        db._conn.execute(
+            "INSERT INTO bar_log(ts,symbol,interval,open,high,low,close,volume) VALUES (?,?,?,?,?,?,?,?)",
+            (ts + i * 300, "INFY", "5m", close, close + 1, close - 0.5, close, 1000),
+        )
     db._conn.execute(
         """
         INSERT INTO strategy_discovery(rule_id, symbol, conditions, win_rate, avg_return, sample_count, discovered_ts, promoted)
         VALUES ('strong_rule', 'INFY', ?, 0.72, 0.4, 25, ?, 0)
         """,
-        (json.dumps({"field": "ibs", "op": "lt", "threshold": 0.2}), int(time.time())),
+        (json.dumps({"field": "r3m", "op": "gt", "threshold": 0.001}), int(time.time())),
     )
     db._conn.commit()
     promoted = promote_discovery_rules(db)

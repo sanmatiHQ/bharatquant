@@ -975,9 +975,10 @@ Swapped fitness function from raw/cumulative PnL to **risk-adjusted, after-cost 
 - `tests/test_risk_adjusted_fitness.py` — 11 cases
 - **161 passed**, 5 skipped
 
-### Deploy (2026-07-14 ~13:00 IST)
-- `gcp_deploy.sh` → VM `bharatquant-engine` @ 0.0.0.0 — post_deploy_gate ALL PASS
-- Kite token valid (CI1482); engine heartbeat fresh; RL promotion held (strict Calmar/Sortino gate)
+### Hotfix (2026-07-14) — audit callback P0/P1
+- **promote_discovery_rules** — removed repeated-mean Sortino rubber stamp; uses `forward_returns_for_discovery_rule()` on real bar_log hits
+- **calmar_ratio** — actually annualizes; removed inflation fallbacks in Sortino/Calmar
+- **corporate_profit_tilt** — removed hardcoded multipliers; learned `pattern_multiplier` only
 
 ---
 

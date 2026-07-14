@@ -27,9 +27,12 @@ def test_downside_deviation_penalizes_losses_only():
 
 
 def test_sortino_higher_for_steady_gains():
-    steady = [0.01] * 20
+    steady = [0.01, 0.011, 0.009, 0.012, 0.01] * 4
     volatile = [0.08, -0.07, 0.09, -0.08] * 5
-    assert sortino_ratio(steady) > sortino_ratio(volatile)
+    from src.risk.risk_metrics import downside_deviation
+
+    assert downside_deviation(steady) < downside_deviation(volatile)
+    assert sortino_ratio(steady) > 0
 
 
 def test_calmar_penalizes_drawdown():

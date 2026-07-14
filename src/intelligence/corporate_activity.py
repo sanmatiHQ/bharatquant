@@ -258,7 +258,11 @@ def load_corporate_activity(db: DB, *, lookback_days: int = 7) -> dict[str, Any]
 
 
 def corporate_profit_tilt(symbol: str, ctx: Any) -> tuple[float, list[str]]:
-    """Map corporate/mass-market signals → expected-profit multiplier for a symbol."""
+    """
+    Map NSE public disclosure signals → sizing multiplier from learned institutional outcomes.
+    Data: PIT filings, bulk/block deals, shareholding — all public regulatory sources.
+    No hardcoded tilt constants; multipliers come from labeled corporate_event_outcomes only.
+    """
     from .institutional_learning import load_institutional_weights, pattern_multiplier
 
     sym = str(symbol or "").replace("NSE:", "")
@@ -273,16 +277,7 @@ def corporate_profit_tilt(symbol: str, ctx: Any) -> tuple[float, list[str]]:
         else:
             weights = {}
 
-    promoter_watch = list(getattr(ctx, "promoter_watch", None) or [])
-    dividend_watch = list(getattr(ctx, "dividend_watch", None) or [])
     recent = list(getattr(ctx, "recent_corporate", None) or [])
-
-    if sym in promoter_watch:
-        mult *= 1.14
-        reasons.append("promoter_stake_up")
-    if sym in dividend_watch:
-        mult *= 1.08
-        reasons.append("dividend_income")
 
     for ev in recent[:15]:
         if str(ev.get("symbol", "")).replace("NSE:", "") != sym:
@@ -291,27 +286,6 @@ def corporate_profit_tilt(symbol: str, ctx: Any) -> tuple[float, list[str]]:
         side = str(ev.get("side", ""))
         kind = str(ev.get("kind", ""))
         entity = str(ev.get("entity_class", "other"))
-        if kind in ("insider",) or cat == "promoter":
-            if side == "buy":
-                mult *= 1.1
-                reasons.append("insider_buy")
-            elif side == "sell":
-                mult *= 0.72
-                reasons.append("insider_sell")
-        elif kind == "bulk":
-            if side == "buy":
-                mult *= 1.08
-                reasons.append("bulk_buy")
-            elif side == "sell":
-                mult *= 0.85
-                reasons.append("bulk_sell")
-        elif kind == "shareholding" and side == "buy":
-            mult *= 1.07
-            reasons.append("institutional_shp_up")
-        elif cat == "dividend":
-            mult *= 1.06
-            reasons.append("dividend_catalyst")
-
         et = {
             "insider": "INSIDER_FILING",
             "bulk": "BLOCK_DEAL",
@@ -319,9 +293,10 @@ def corporate_profit_tilt(symbol: str, ctx: Any) -> tuple[float, list[str]]:
             "mf_flow": "MF_HOLDING_UPDATE",
         }.get(kind, "NEWS_ALERT")
         lm, lr = pattern_multiplier(weights, event_type=et, category=cat, side=side, entity_class=entity)
-        if lm != 1.0 and lr:
+        if lm != 1.0:
             mult *= lm
-            reasons.append(lr)
+            if lr:
+                reasons.append(lr)
 
     return min(1.35, max(0.55, mult)), reasons
 

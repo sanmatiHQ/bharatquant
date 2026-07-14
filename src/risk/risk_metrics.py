@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 
 
@@ -40,7 +41,10 @@ def sortino_ratio(returns: list[float], target: float = 0.0) -> float:
     mean_r = sum(returns) / len(returns)
     dd = downside_deviation(returns, target)
     if dd <= 1e-12:
-        return mean_r * 10.0 if mean_r > 0 else 0.0
+        if mean_r <= 0:
+            return 0.0
+        # No downside vol — cap; never inflate via ×10 on constant series
+        return min(3.0, abs(mean_r) * math.sqrt(len(returns)))
     return mean_r / dd
 
 
@@ -59,22 +63,49 @@ def max_drawdown_from_returns(returns: list[float]) -> float:
     return max_dd
 
 
-def calmar_ratio(returns: list[float]) -> float:
+def calmar_ratio(
+    returns: list[float],
+    *,
+    periods_per_year: float | None = None,
+) -> float:
+    """
+    Calmar = annualized return / max drawdown.
+    `returns` are per-period fractional returns (e.g. 0.01 = 1%).
+    Set periods_per_year for your bar frequency (default from CALMAR_PERIODS_PER_YEAR env, 252 daily).
+    """
     if len(returns) < 5:
         return 0.0
-    total = sum(returns)
     mdd = max_drawdown_from_returns(returns)
     if mdd <= 1e-6:
-        return total * 5.0 if total > 0 else 0.0
-    return total / mdd
+        return 0.0
+    equity = 1.0
+    for r in returns:
+        equity *= 1.0 + r
+    total = equity - 1.0
+    n = len(returns)
+    ppy = periods_per_year if periods_per_year is not None else float(
+        os.getenv("CALMAR_PERIODS_PER_YEAR", "252")
+    )
+    ann = (1.0 + total) ** (ppy / n) - 1.0 if n > 0 else 0.0
+    return ann / mdd
 
 
-def fitness_from_returns(returns: list[float]) -> RiskFitness:
+def cumulative_return_drawdown_ratio(returns: list[float]) -> float:
+    """Raw cumulative return / max DD — not annualized; use for fixed-window ranking only."""
+    if len(returns) < 5:
+        return 0.0
+    mdd = max_drawdown_from_returns(returns)
+    if mdd <= 1e-6:
+        return 0.0
+    return sum(returns) / mdd
+
+
+def fitness_from_returns(returns: list[float], *, periods_per_year: float | None = None) -> RiskFitness:
     if not returns:
         return RiskFitness(0.0, 0.0, 0.0, 0.0, 0.0, 0)
     return RiskFitness(
         sortino=sortino_ratio(returns),
-        calmar=calmar_ratio(returns),
+        calmar=calmar_ratio(returns, periods_per_year=periods_per_year),
         downside_dev=downside_deviation(returns),
         max_drawdown=max_drawdown_from_returns(returns),
         mean_return=sum(returns) / len(returns),

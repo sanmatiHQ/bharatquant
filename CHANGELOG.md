@@ -26,8 +26,8 @@
 - **Strategy lifecycle** — candidacy → probation (10%) → full → auto-demotion
 
 ### Deploy
-- Pre-deploy: 161 pytest passed; post-deploy gate ALL PASS on `bharatquant-engine` (0.0.0.0)
-- Dashboard: https://YOUR-PUBLIC-HOST.sslip.io/dashboard
+- Pre-deploy: 161 pytest passed; post-deploy gate ALL PASS on production VM
+- Dashboard live on configured public host
 
 ## 2026-07-14 — Deploy hardening (startup regression prevention)
 

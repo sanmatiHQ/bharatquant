@@ -77,14 +77,26 @@ def test_learn_unified_weights_from_outcomes(db):
     assert stored["strategies"]["momentum_consensus"] >= 1.0
 
 
+def _seed_uptrend_bars(db: DB, symbol: str = "INFY", n: int = 50) -> None:
+    ts = int(time.time()) - 7200
+    for i in range(n):
+        close = 100.0 + i * 1.5
+        db._conn.execute(
+            "INSERT INTO bar_log(ts,symbol,interval,open,high,low,close,volume) VALUES (?,?,?,?,?,?,?,?)",
+            (ts + i * 300, symbol, "5m", close, close + 1, close - 0.5, close, 1000),
+        )
+    db._conn.commit()
+
+
 def test_promote_discovery_rules(db):
+    _seed_uptrend_bars(db)
     db._conn.execute(
         """
         INSERT INTO strategy_discovery(rule_id, symbol, conditions, win_rate, avg_return, sample_count, discovered_ts, promoted)
         VALUES ('ibs_oversold_INFY', 'INFY', ?, 0.72, 0.4, 25, ?, 0)
         """,
         (
-            json.dumps({"rule_id": "ibs_oversold", "field": "ibs", "op": "lt", "threshold": 0.2, "source": "quantifiedstrategies"}),
+            json.dumps({"rule_id": "momentum", "field": "r3m", "op": "gt", "threshold": 0.001, "source": "test"}),
             int(time.time()),
         ),
     )

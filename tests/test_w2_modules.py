@@ -100,28 +100,37 @@ def test_corporate_activity_normalization_and_snapshot(tmp_path):
     assert len(snap["timeline"]) >= 3
 
 
-def test_corporate_profit_tilt():
+def test_corporate_profit_tilt(tmp_path):
     from src.intelligence.corporate_activity import corporate_profit_tilt
     from src.strategies.base import MarketContext
+    import json
 
+    db = DB(DBConfig(sqlite_path=str(tmp_path / "corp.db")))
+    payload = {
+        "patterns": {"BLOCK_DEAL:block_deal:buy:other": 1.12, "INSIDER_FILING:insider:sell:other": 0.78},
+        "strategies": {},
+    }
+    db._conn.execute(
+        "INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+        ("institutional_learn_weights", json.dumps(payload)),
+    )
+    db._conn.commit()
     ctx = MarketContext(
-        promoter_watch=["INFY"],
-        dividend_watch=["HDFC"],
         recent_corporate=[
-            {"symbol": "TCS", "kind": "bulk", "side": "buy", "category": "block_deal"},
-            {"symbol": "RELIANCE", "kind": "insider", "side": "sell", "category": "insider"},
+            {"symbol": "TCS", "kind": "bulk", "side": "buy", "category": "block_deal", "entity_class": "other"},
+            {"symbol": "RELIANCE", "kind": "insider", "side": "sell", "category": "insider", "entity_class": "other"},
         ],
     )
-    mult, reasons = corporate_profit_tilt("INFY", ctx)
+    ctx.institutional_weights = payload
+    mult, reasons = corporate_profit_tilt("TCS", ctx)
     assert mult > 1.0
-    assert "promoter_stake_up" in reasons
+    assert any("learned" in r for r in reasons)
 
     mult2, reasons2 = corporate_profit_tilt("RELIANCE", ctx)
     assert mult2 < 1.0
-    assert "insider_sell" in reasons2
 
-    mult3, _ = corporate_profit_tilt("TCS", ctx)
-    assert mult3 > 1.0
+    mult3, _ = corporate_profit_tilt("INFY", ctx)
+    assert mult3 == 1.0
 
 
 def test_tick_ring_buffer():
