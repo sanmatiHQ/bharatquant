@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Optional, Type
@@ -15,6 +16,7 @@ from ..strategies.base import MarketContext, Signal, Strategy
 from ..strategies.registry import _BUILTIN
 
 logger = logging.getLogger("bharatquant.strategy_screen")
+_MAX_SCREEN_SAMPLES = int(os.getenv("HIST_SCREEN_MAX_SAMPLES", "5000"))
 
 
 @dataclass
@@ -236,10 +238,14 @@ async def screen_strategy(
             interval=interval,
             lookback_days=lookback_days,
         )
+    metric_rets = all_rets
+    if n > _MAX_SCREEN_SAMPLES:
+        step = max(1, n // _MAX_SCREEN_SAMPLES)
+        metric_rets = all_rets[::step][:_MAX_SCREEN_SAMPLES]
     wins = sum(1 for r in all_rets if r > 0)
     win_rate = wins / n
-    ppy = periods_per_year_discovery(n, lookback_days) if interval == "5m" else 252.0
-    fit = fitness_from_returns(all_rets, periods_per_year=ppy)
+    ppy = periods_per_year_discovery(len(metric_rets), lookback_days) if interval == "5m" else 252.0
+    fit = fitness_from_returns(metric_rets, periods_per_year=ppy)
     pval = binomial_edge_p_value(wins, n)
     cleared = n >= 20 and fit.composite >= 0.15 and pval < 0.05
     return StrategyScreenResult(

@@ -126,6 +126,14 @@ def binomial_edge_p_value(wins: int, n: int, null_p: float = 0.5) -> float:
     """One-sided p-value: P(X >= wins | Binomial(n, null_p))."""
     if n <= 0 or wins <= 0:
         return 1.0
+    if n >= 100:
+        # Normal approximation with continuity correction (stable for large n).
+        mu = n * null_p
+        sigma = math.sqrt(n * null_p * (1.0 - null_p))
+        if sigma <= 0:
+            return 0.0 if wins > mu else 1.0
+        z = (wins - 0.5 - mu) / sigma
+        return min(1.0, max(0.0, 0.5 * math.erfc(z / math.sqrt(2))))
     p = 0.0
     for k in range(wins, n + 1):
         p += math.comb(n, k) * (null_p**k) * ((1.0 - null_p) ** (n - k))
