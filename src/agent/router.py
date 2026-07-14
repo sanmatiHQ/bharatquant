@@ -94,6 +94,12 @@ class AgentRouter:
             w = self._weights.get(s.strategy_id, 1.0)
             conf = s.confidence if s.strategy_id == "signal_combiner" else self._adjust_confidence(s)
             learn_mult = strategy_weight_multiplier(learned, s.strategy_id)
+            if self.db:
+                from ..agent.strategy_lifecycle import get_lifecycle_state
+                from ..intelligence.historical_screen import candidacy_priority_multiplier
+
+                if get_lifecycle_state(self.db, s.strategy_id) == "candidacy":
+                    learn_mult *= candidacy_priority_multiplier(self.db, s.strategy_id)
             scored.append((conf * w * learn_mult, s))
         if not scored:
             return None

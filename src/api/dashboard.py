@@ -527,6 +527,12 @@ def create_app() -> FastAPI:
 
         return evaluate_capital_gate(db)
 
+    @app.get("/api/historical_screen")
+    def api_historical_screen(cleared_only: bool = False):
+        from ..intelligence.historical_screen import list_historical_screen
+
+        return {"results": list_historical_screen(db, cleared_only=cleared_only)}
+
     @app.post("/api/budget/approve")
     def api_budget_approve(body: BudgetApproveBody, request: Request):
         require_admin(request)

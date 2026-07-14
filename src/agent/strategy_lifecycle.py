@@ -82,6 +82,14 @@ def can_allocate_capital(db: DB, strategy_id: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def historical_screen_cleared(db: DB, strategy_id: str) -> bool:
+    """Pre-screen flag for candidacy priority — not a promotion substitute."""
+    from ..intelligence.historical_screen import get_historical_screen
+
+    row = get_historical_screen(db, strategy_id)
+    return bool(row and int(row.get("cleared") or 0))
+
+
 def record_shadow_signal(db: DB, strategy_id: str) -> None:
     ensure_lifecycle_row(db, strategy_id)
     with db.tx() as conn:

@@ -179,3 +179,13 @@ def run_walk_forward(
             "n_trades": len(trades),
         },
     )
+
+
+def run_registry_historical_screen(db, **kwargs) -> list[dict]:
+    """
+    Screen every built-in registry strategy on backfilled bar_log history.
+    Pre-screen priority only — does not alter capital_gate or lifecycle promotion.
+    """
+    from .strategy_screen import run_registry_screen
+
+    return run_registry_screen(db, **kwargs)

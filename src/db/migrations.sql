@@ -395,3 +395,21 @@ CREATE TABLE IF NOT EXISTS capital_gate_evaluations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_capital_gate_ts ON capital_gate_evaluations(ts);
+
+CREATE TABLE IF NOT EXISTS historical_screen (
+  strategy_id TEXT PRIMARY KEY,
+  screened_ts INTEGER NOT NULL,
+  interval TEXT NOT NULL,
+  sample_count INTEGER DEFAULT 0,
+  win_rate REAL DEFAULT 0,
+  sortino REAL DEFAULT 0,
+  calmar REAL DEFAULT 0,
+  max_drawdown_pct REAL DEFAULT 0,
+  binomial_p REAL DEFAULT 1,
+  composite REAL DEFAULT 0,
+  cleared INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'pending',
+  lookback_days INTEGER DEFAULT 365
+);
+
+CREATE INDEX IF NOT EXISTS idx_historical_screen_cleared ON historical_screen(cleared, composite DESC);
