@@ -6,6 +6,9 @@ import json
 import os
 import sys
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
 from src.db.database import DB, DBConfig
 from src.ops.capital_gate import evaluate_capital_gate
 from src.ops.fitness_evidence import system_fitness_snapshot
