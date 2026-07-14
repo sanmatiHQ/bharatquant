@@ -1002,6 +1002,12 @@ Swapped fitness function from raw/cumulative PnL to **risk-adjusted, after-cost 
 | Capital graduation | Start ≤10% intended capital; 4-week probation; auto rollback if parity gap exceeds threshold |
 | New edge strategies | Candidacy only; run `strategy_correlation.py` — reject/replace if ρ>0.7 with running strategy |
 
+### Git history scrub + deploy pipeline restored (2026-07-14)
+- Ran `scripts/scrub_git_history.sh` — production IPs/project ID removed from all commits via `git-filter-repo`
+- Fixed `audit_secrets.sh` history needles (check real fingerprints only, not scrub placeholders)
+- **`pre_deploy_smoke.sh` PASS** (165 pytest) — `gcp_deploy.sh` no longer requires manual rsync bypass
+- **Force-pushed** rewritten `main`; any local clones must `git fetch && git reset --hard origin/main`
+
 ---
 
 ## 2026-07-12 — Engine crash loop / supervisor orphans (prior entry)

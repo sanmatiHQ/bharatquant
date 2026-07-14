@@ -104,9 +104,9 @@ _check_history_needle() {
     FAIL=1
   fi
 }
-_check_history_needle '0.0.0.0'
-_check_history_needle 'YOUR-PUBLIC-HOST.sslip.io'
-_check_history_needle 'your-gcp-project-id'
+_check_history_needle '34.93.102.20'
+_check_history_needle '34-93-102-20.sslip.io'
+_check_history_needle 'gem-bid-automation-a1'
 
 if [[ "$FAIL" -eq 0 ]]; then
   echo "OK: open-source hygiene passed"
