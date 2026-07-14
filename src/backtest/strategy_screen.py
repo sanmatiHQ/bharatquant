@@ -17,6 +17,8 @@ from ..strategies.registry import _BUILTIN
 
 logger = logging.getLogger("bharatquant.strategy_screen")
 _MAX_SCREEN_SAMPLES = int(os.getenv("HIST_SCREEN_MAX_SAMPLES", "5000"))
+_MAX_BARS_PER_SYMBOL = int(os.getenv("HIST_SCREEN_MAX_BARS", "8000"))
+_REPLAY_STRIDE = max(1, int(os.getenv("HIST_SCREEN_REPLAY_STRIDE", "5")))
 
 
 @dataclass
@@ -131,7 +133,7 @@ async def _replay_symbol(
     sym = str(bars[0]["symbol"])
     rets: list[float] = []
     listens = strategy.listens_to
-    for i in range(20, len(bars) - forward_bars):
+    for i in range(20, len(bars) - forward_bars, _REPLAY_STRIDE):
         payload = _payload_at(closes, highs, lows, vols, i)
         ts = int(bars[i]["ts"])
         px = closes[i]
@@ -211,11 +213,13 @@ async def screen_strategy(
     for sym in symbols:
         rows = db._conn.execute(
             """
-            SELECT ts, symbol, open, high, low, close, volume FROM bar_log
-            WHERE symbol=? AND interval=? AND ts >= ?
-            ORDER BY ts ASC
+            SELECT ts, symbol, open, high, low, close, volume FROM (
+              SELECT ts, symbol, open, high, low, close, volume FROM bar_log
+              WHERE symbol=? AND interval=? AND ts >= ?
+              ORDER BY ts DESC LIMIT ?
+            ) sub ORDER BY ts ASC
             """,
-            (sym, interval, cutoff),
+            (sym, interval, cutoff, _MAX_BARS_PER_SYMBOL),
         ).fetchall()
         if len(rows) < 40:
             continue
@@ -311,11 +315,11 @@ async def screen_all_registry(
         strat = _instantiate_strategy(sid, db)
         if not strat:
             continue
-        out.append(
-            await screen_strategy(
-                db, strat, symbols, interval=interval, lookback_days=lookback_days
-            )
+        res = await screen_strategy(
+            db, strat, symbols, interval=interval, lookback_days=lookback_days
         )
+        out.append(res)
+        persist_screen_results(db, [res])
     return out
 
 
