@@ -69,8 +69,10 @@ def train_sb3(
     model.learn(total_timesteps=steps)
     model.save(str(sb3_path))
 
-    # Export action probs to numpy policy for runtime without SB3 dependency
-    _export_sb3_to_numpy(model, out_dir / "policy.npz")
+    # Runtime inference prefers SB3 zip when available (full MLP); numpy export is fallback only.
+    sb3_path = out_dir / "sb3_ppo.zip"
+    if not sb3_path.exists():
+        _export_sb3_to_numpy(model, out_dir / "policy.npz")
 
     return {"status": "ok", "engine": "stable_baselines3", "path": str(sb3_path), "timesteps": steps}
 

@@ -279,16 +279,20 @@ def create_app() -> FastAPI:
             json.dumps({"data": {"access_token": access}, "ts": int(time.time())}),
             encoding="utf-8",
         )
+        from ..ops.healthchecks import invalidate_token_cache
+
+        invalidate_token_cache()
         restart_flag = Path(os.getenv("LOGS_DIR", "logs")) / "engine_restart.flag"
         restart_flag.parent.mkdir(parents=True, exist_ok=True)
         restart_flag.write_text(str(int(time.time())), encoding="utf-8")
         return HTMLResponse(
             f"""<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Login OK</title>
+            <meta http-equiv="refresh" content="3;url=/dashboard"/>
             <style>{DASHBOARD_CSS}</style></head><body><div class="wrap" style="margin-top:3rem">
             <div class="card"><h2>Login successful</h2>
-            <p>Kite access token saved. Engine will pick it up on next auth refresh.</p>
-            <a class="btn" href="/dashboard">Open dashboard</a>
-            <a class="btn ghost" href="/login" style="margin-left:0.5rem">Login page</a>
+            <p>Kite connected. Token saved — live ticks reconnect in ~10s.</p>
+            <p class="muted">Redirecting to dashboard…</p>
+            <a class="btn" href="/dashboard">Open dashboard now</a>
             </div></div></body></html>"""
         )
 
@@ -571,18 +575,13 @@ def create_app() -> FastAPI:
         return [dict(r) for r in cur.fetchall()]
 
     @app.get("/api/index/ohlc/{index_key}")
-    def index_ohlc(index_key: str):
-        from ..ingest.index_data import INDEX_MAP, fetch_index_ohlc, fetch_index_ohlc_from_db
+    def index_ohlc(index_key: str, period: str = "1d", interval: str = "5m"):
+        from ..ingest.index_data import INDEX_MAP, fetch_index_ohlc
 
         key = index_key.lower()
         if key not in INDEX_MAP:
             raise HTTPException(status_code=404, detail=f"unknown index: {index_key}")
-        data = fetch_index_ohlc(key)
-        if not data["bars"]:
-            fb = INDEX_MAP[key]["fallback"]
-            data["bars"] = fetch_index_ohlc_from_db(db, fb)
-            data["source"] = f"db_bar_log:{fb}"
-        return data
+        return fetch_index_ohlc(key, period=period, interval=interval, db=db)
 
     @app.get("/api/stock/lookup/{symbol}")
     def stock_lookup(symbol: str):

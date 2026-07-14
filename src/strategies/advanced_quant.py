@@ -275,16 +275,34 @@ class StrategyLabStrategy:
             return
         self._last_refresh = time.time()
         try:
-            rows = self.db.conn.execute(
+            from ..agent.strategy_stats import strategy_performance
+
+            rows = self.db._conn.execute(
                 """
-                SELECT strategy_id, realized_pnl AS pnl
+                SELECT strategy_id, realized_pnl AS pnl, trade_count
                 FROM strategy_pnl
-                WHERE realized_pnl > 0
+                WHERE trade_count >= 10 AND realized_pnl > 0
                 ORDER BY realized_pnl DESC
-                LIMIT 5
+                LIMIT 8
                 """
             ).fetchall()
-            self._winning = {r["strategy_id"]: float(r["pnl"]) for r in rows}
+            scored = {}
+            for r in rows:
+                sid = str(r["strategy_id"])
+                from ..agent.strategy_stats import strategy_fitness, strategy_performance
+
+                perf = strategy_performance(self.db, sid)
+                fit = strategy_fitness(self.db, sid)
+                if not perf.has_edge_data or fit.composite <= 0:
+                    continue
+                from ..agent.strategy_stats import binomial_edge_p_value
+
+                if binomial_edge_p_value(perf.wins, perf.sample_count) > 0.05:
+                    continue
+                if fit.sortino < float(os.getenv("LIFECYCLE_MIN_SORTINO", "0.15")):
+                    continue
+                scored[sid] = fit.composite
+            self._winning = scored
         except Exception:
             self._winning = {}
 
@@ -304,7 +322,7 @@ class StrategyLabStrategy:
             return None
         best = max(self._winning.values())
         if r3m > 0.004 and vol_ratio > 1.3 and ctx.regime != "RISK_OFF":
-            conf = min(0.8, 0.62 + best / 5000)
+            conf = min(0.8, 0.62 + best / 5.0)
             top = next(iter(self._winning))
             return Signal(self.id, sym, "BUY", "CNC", conf, f"lab_promote_{top}")
         return None

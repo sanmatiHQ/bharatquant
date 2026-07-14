@@ -1,5 +1,43 @@
 # BharatQuant Changelog
 
+## 2026-07-14 — Intelligence honesty + risk-adjusted learning (deployed VM)
+
+### Audit fixes (items 0–10) — stop measuring fake edge
+- **Paper slippage** — `PaperBroker` delegates to `CostEngine` only (BUY above LTP, SELL below)
+- **Regime classifier** — rolling `index_returns` deque + bar_log fallback; FII nudges adjacent regimes only
+- **Kelly sizing** — per-strategy Bayesian stats (`strategy_stats.py`); removed silent ×0.02; `KELLY_SAFETY_SCALAR`
+- **Bandit** — Thompson sampling from realized win/loss (not self-reported confidence)
+- **RL gym** — net-of-cost rewards via `CostEngine`; hold steps pass net unrealized
+- **Shadow gate** — requires ≥500 bars + ≥3 symbols; no auto-pass on thin/neutral history
+- **RL inference** — `RLAgent` loads `sb3_ppo.zip` when present; numpy export is fallback only
+- **Strategy correlation** — disable redundant pairs (>0.7); binomial promotion gate (p<0.05)
+- **Cost-edge** — removed hardcoded `_STRATEGY_EDGE_PCT`; measured `expected_move_pct_for_strategy()`
+- **Portfolio beta cap** — `portfolio_beta.can_add_beta_exposure()` in `risk_veto`
+- **RBI calendar** — published MPC dates 2025/2026; Wilder RSI in strategy discovery
+
+### Risk-adjusted fitness — single learning objective
+- **`risk_metrics.py`** — downside deviation, Sortino, Calmar composite (not raw PnL)
+- **RL reward** — Sortino-shaped: `net_return − λ·downside_deviation`
+- **Adaptive Kelly** — fraction shrinks when win-rate variance is high
+- **Shadow/promotion** — Calmar + Sortino composite gates (RL, discovery, strategy_lab)
+- **Credit assignment** — all fuse competitors logged to `shadow_trades`
+- **Bandit diversity cap** — `BANDIT_MAX_WEIGHT=0.40`
+- **Regime switching** — vol/return shock trigger + 3-bar persistence dampener
+- **Strategy lifecycle** — candidacy → probation (10%) → full → auto-demotion
+
+### Deploy
+- Pre-deploy: 161 pytest passed; post-deploy gate ALL PASS on `bharatquant-engine` (0.0.0.0)
+- Dashboard: https://YOUR-PUBLIC-HOST.sslip.io/dashboard
+
+## 2026-07-14 — Deploy hardening (startup regression prevention)
+
+- **Pre-deploy smoke** (`scripts/pre_deploy_smoke.sh`) — pytest + engine boot contract; blocks broken deploys
+- **Post-deploy gate** (`scripts/post_deploy_gate.sh`) — HTTPS/local health, single engine+dashboard PID, heartbeat, kite auth
+- **Token clobber fix** — `gcp_sync_secrets.sh` preserves VM OAuth token unless `SYNC_KITE_TOKEN=1` + live validation
+- **Supervisor orphan fix** — `_bootstrap_stack()` kills stale processes before binding :8080
+- **Kite hot-reload** — `kite_token_watcher` restarts feed ~10s after OAuth without full engine restart
+- **Engine boot fix** — `persist_engine_phase(db)` arity corrected
+
 ## 2026-07-13 — Dashboard v2 (public + owner auth)
 
 ### UX overhaul

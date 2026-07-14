@@ -35,54 +35,6 @@ from ..exec.order_fill_handler import paper_fill_event
 
 logger = logging.getLogger("bharatquant.execution")
 
-_STRATEGY_EDGE_PCT: dict[str, float] = {
-    "opening_range": 1.5,
-    "affordable_momentum": 1.2,
-    "fast_snapshot": 1.4,
-    "vwap_reversion": 1.8,
-    "combined_momentum": 2.5,
-    "turtle_breakout": 2.0,
-    "gift_gap": 1.2,
-    "short_term_reversal": 2.0,
-    "pairs_stat_arb": 1.5,
-    "bulk_accumulation": 2.5,
-    "insider_cluster": 2.0,
-    "quality_momentum": 2.0,
-    "macro_confluence": 1.0,
-    "gift_fii_sync": 1.0,
-    "volume_breakout": 1.8,
-    "bollinger_squeeze": 1.6,
-    "dual_momentum_pro": 2.2,
-    "fii_divergence": 1.5,
-    "vwap_volume_confirm": 1.4,
-    "crude_energy_beta": 1.8,
-    "rsi_regime_adaptive": 1.5,
-    "adaptive_alpha": 2.0,
-    "strategy_lab": 1.2,
-    "custom_gap_fade": 1.3,
-    "sector_rotation": 1.8,
-    "options_greeks": 1.5,
-    "connors_ibs": 1.7,
-    "crabel_nr7": 1.6,
-    "zscore_reversion": 2.0,
-    "momentum_consensus": 2.2,
-    "ema_cross_rsi": 1.5,
-    "liquidity_sweep": 1.8,
-    "turnaround_tuesday": 1.2,
-    "india_power_hour": 1.4,
-    "india_lunch_fade": 1.3,
-    "india_opening_drive": 1.5,
-    "nifty_buy_the_dip": 1.6,
-    "india_dual_rotation": 1.5,
-    "ath_breakout_in": 1.7,
-    "lower_highs_fade": 1.4,
-    "us_overnight_follow": 1.5,
-    "expiry_week_caution": 1.2,
-    "monday_effect_in": 1.2,
-    "calendar_activity": 1.6,
-    "sentiment_regime": 1.5,
-    "signal_combiner": 1.0,
-}
 _HEDGE_ETF = "NIFTYBEES"
 
 
@@ -214,11 +166,11 @@ class ExecutionEngine:
         return False
 
     def _expected_move_pct(self, sig: Signal) -> float:
-        base = _STRATEGY_EDGE_PCT.get(sig.strategy_id, 1.5)
         from ..intelligence.corporate_activity import corporate_profit_tilt
+        from ..agent.strategy_stats import expected_move_pct_for_strategy
 
         mult, _ = corporate_profit_tilt(sig.symbol, self.router.ctx)
-        return base * sig.confidence * mult
+        return expected_move_pct_for_strategy(self.db, sig.strategy_id, sig.confidence, mult)
 
     async def _paper_option_hedge(self, chosen: Signal, event: MarketEvent) -> bool:
         """Paper buy protective put when IV strategy fires HEDGE."""
@@ -512,8 +464,7 @@ class ExecutionEngine:
                 return
             min_move = self.costs.min_profit_move_pct(qty, ltp)
             expected = self._expected_move_pct(chosen)
-            mis_opportunistic = chosen.rail.upper() == "MIS" and chosen.confidence >= 0.65
-            if expected < min_move and not mis_opportunistic and chosen.confidence < 0.82:
+            if expected < min_move:
                 logger.info(
                     "cost_edge_veto",
                     extra={"symbol": chosen.symbol, "expected": expected, "min_move": min_move},
@@ -589,6 +540,9 @@ class ExecutionEngine:
                         from ..ops.execution_cooldown import mark_order_placed
 
                         mark_order_placed(self.db)
+                        from ..agent.strategy_lifecycle import record_probation_trade
+
+                        record_probation_trade(self.db, chosen.strategy_id)
                         if self._bus_publish and order_id:
                             await self._bus_publish(paper_fill_event(sym, "BUY", qty, exec_px, order_id))
                         await self._train_after_trade()

@@ -226,7 +226,7 @@ async def main() -> None:
     from ..ops.agent_state import touch_heartbeat, persist_engine_phase
 
     touch_heartbeat(db)
-    persist_engine_phase(db, "BOOT")
+    persist_engine_phase(db)
     _seed_paper_cash(db, logger)
     from ..ops.trading_phase import assert_live_mode_allowed, evaluate_live_gate
 
@@ -415,9 +415,18 @@ async def main() -> None:
     bus.subscribe(EventType.SESSION_OPEN, on_session_open)
 
     kite_feed: Optional[KiteTickFeed] = None
+    _last_feed_restart = 0.0
 
     def _restart_feed() -> None:
-        nonlocal kite_feed
+        nonlocal kite_feed, _last_feed_restart
+        import time as _time
+
+        min_gap = float(os.getenv("FEED_MIN_RECONNECT_SEC", "30"))
+        now = _time.monotonic()
+        if now - _last_feed_restart < min_gap:
+            logger.debug("feed_restart_debounced", extra={"gap_sec": round(now - _last_feed_restart, 1)})
+            return
+        _last_feed_restart = now
         if kite_feed:
             kite_feed.stop()
         kite_feed = _start_kite_feed(bus, db, universe, logger)
@@ -425,6 +434,12 @@ async def main() -> None:
     kite_feed = _start_kite_feed(bus, db, universe, logger)
     if kite_feed:
         watchdog.set_reconnect(_restart_feed)
+
+    from ..ops.kite_token_watcher import watch_kite_token_file
+
+    token_watch_task = asyncio.create_task(
+        watch_kite_token_file(_restart_feed, interval_sec=10.0)
+    )
 
     from ..ops.budget_gate import credit_daily_stipend_on_open
     from ..screening.screen_orchestrator import ensure_fresh_screen
@@ -443,6 +458,9 @@ async def main() -> None:
 
     screen_task = asyncio.create_task(_startup_screen())
     batch_ltp_task = asyncio.create_task(poll_batch_ltp_loop(db, universe))
+    from ..feeds.index_quote_poller import poll_index_quotes_loop
+
+    index_poll_task = asyncio.create_task(poll_index_quotes_loop(db))
 
     loop = asyncio.get_running_loop()
 
@@ -467,16 +485,17 @@ async def main() -> None:
 
     async def strategy_learn_loop() -> None:
         from ..intelligence.strategy_learning import refresh_all_learning
+        from ..strategies.market_session import is_nse_open
 
         while True:
             try:
-                meta = refresh_all_learning(db, ctx)
+                meta = refresh_all_learning(db, router.ctx)
                 for sid, w in bandit.update_weights().items():
                     router.set_weight(sid, w)
                 logger.info("strategy_learn_cycle", extra=meta)
             except Exception:
                 logger.exception("strategy_learn_error")
-            await asyncio.sleep(1800)
+            await asyncio.sleep(300 if is_nse_open() else 1800)
 
     learn_task = asyncio.create_task(strategy_learn_loop())
     recorder_task = asyncio.create_task(recorder_flush_loop())
@@ -534,8 +553,10 @@ async def main() -> None:
         heartbeat_task.cancel()
         routines_task.cancel()
         clock_task.cancel()
+        token_watch_task.cancel()
         screen_task.cancel()
         batch_ltp_task.cancel()
+        index_poll_task.cancel()
         if fast_task:
             fast_task.cancel()
         recorder.flush()

@@ -197,15 +197,78 @@ def _ensure_engine_running(db: DB) -> None:
     _start_process("src.engine.main", PID_FILE)
 
 
+def _pids_for_module(module: str) -> list[int]:
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-f", f"{sys.executable} -m {module}"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        return [int(x) for x in out.split() if x.strip().isdigit()]
+    except subprocess.CalledProcessError:
+        return []
+
+
+def _kill_module_orphans(module: str, *, keep_pid: int | None = None) -> None:
+    """Orphans survive supervisor restart (Popen start_new_session=True)."""
+    for pid in _pids_for_module(module):
+        if keep_pid and pid == keep_pid:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
+def _port_taken(port: int = 8080) -> bool:
+    try:
+        out = subprocess.check_output(["ss", "-tln"], text=True, stderr=subprocess.DEVNULL)
+        return f":{port} " in out
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def _wait_port_free(port: int = 8080, timeout_sec: float = 8.0) -> bool:
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if not _port_taken(port):
+            return True
+        time.sleep(0.25)
+    return not _port_taken(port)
+
+
+def _bootstrap_stack() -> None:
+    """Reap orphan engine/dashboard from prior supervisor, then start clean."""
+    _kill_module_orphans("src.api.dashboard")
+    _kill_module_orphans("src.engine.main")
+    PID_FILE.unlink(missing_ok=True)
+    DASH_PID_FILE.unlink(missing_ok=True)
+    _wait_port_free(8080)
+    start_engine_stack()
+
+
 def _ensure_dashboard_running() -> None:
     """Dashboard must stay up 24×7 — supervisor restarts it if crashed."""
-    if not _pid_running(DASH_PID_FILE, "src.api.dashboard"):
-        logger.warning("dashboard_down", extra={"action": "restart"})
-        _start_process("src.api.dashboard", DASH_PID_FILE)
+    if _pid_running(DASH_PID_FILE, "src.api.dashboard"):
+        return
+    logger.warning("dashboard_down", extra={"action": "restart"})
+    _stop_process(DASH_PID_FILE)
+    _kill_module_orphans("src.api.dashboard")
+    if not _wait_port_free(8080):
+        logger.error("dashboard_port_stuck", extra={"port": 8080})
+        _kill_module_orphans("src.api.dashboard")
+        _wait_port_free(8080, timeout_sec=4.0)
+    _start_process("src.api.dashboard", DASH_PID_FILE)
 
 
 def _start_process(module: str, pid_file: Path) -> None:
-    if _pid_running(pid_file):
+    if _pid_running(pid_file, module):
+        return
+    orphans = _pids_for_module(module)
+    if orphans:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(orphans[0]), encoding="utf-8")
+        logger.info("process_already_running", extra={"py_module": module, "pid": orphans[0]})
         return
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     root = Path(__file__).resolve().parents[2]
@@ -293,7 +356,7 @@ async def run_supervisor() -> None:
         extra={"engine_running": running, "24x7": is_24x7_enabled()},
     )
     if is_24x7_enabled():
-        start_engine_stack()
+        _bootstrap_stack()
 
     while True:
         try:
@@ -335,7 +398,7 @@ async def run_supervisor() -> None:
         if is_24x7_enabled():
             _ensure_dashboard_running()
             if not _pid_running(PID_FILE, "src.engine.main"):
-                start_engine_stack()
+                _bootstrap_stack()
                 _persist_state(db, "ACTIVE", "24x7_recover")
 
         await asyncio.sleep(interval)

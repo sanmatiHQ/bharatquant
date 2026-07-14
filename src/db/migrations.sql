@@ -365,3 +365,13 @@ CREATE TABLE IF NOT EXISTS strategy_signal_outcomes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sso_strategy ON strategy_signal_outcomes(strategy_id);
+
+CREATE TABLE IF NOT EXISTS strategy_lifecycle (
+  strategy_id TEXT PRIMARY KEY,
+  state TEXT NOT NULL DEFAULT 'candidacy',
+  entered_ts INTEGER NOT NULL,
+  shadow_signals INTEGER DEFAULT 0,
+  probation_trades INTEGER DEFAULT 0,
+  last_fitness REAL DEFAULT 0,
+  demoted_ts INTEGER
+);

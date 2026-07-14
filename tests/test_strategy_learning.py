@@ -81,7 +81,7 @@ def test_promote_discovery_rules(db):
     db._conn.execute(
         """
         INSERT INTO strategy_discovery(rule_id, symbol, conditions, win_rate, avg_return, sample_count, discovered_ts, promoted)
-        VALUES ('ibs_oversold_INFY', 'INFY', ?, 0.58, 0.4, 25, ?, 0)
+        VALUES ('ibs_oversold_INFY', 'INFY', ?, 0.72, 0.4, 25, ?, 0)
         """,
         (
             json.dumps({"rule_id": "ibs_oversold", "field": "ibs", "op": "lt", "threshold": 0.2, "source": "quantifiedstrategies"}),

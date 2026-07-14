@@ -70,6 +70,7 @@ class MarketContext:
     fear_greed_index: float = 50.0
     sentiment_label: str = "Neutral"
     recent_headlines: list[dict[str, Any]] = field(default_factory=list)
+    index_returns: list[float] = field(default_factory=list)
 
 
 @runtime_checkable

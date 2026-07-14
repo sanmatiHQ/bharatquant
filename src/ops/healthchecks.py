@@ -14,6 +14,11 @@ import httpx
 _token_cache: dict[str, object] = {"ts": 0.0, "ok": False}
 
 
+def invalidate_token_cache() -> None:
+    """Call after OAuth callback or token file rewrite."""
+    _token_cache.update({"ts": 0.0, "ok": False})
+
+
 def check_token_fast() -> bool:
     """Dashboard fast path — use cache or token file only; no Kite HTTP."""
     now = time.time()

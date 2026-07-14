@@ -112,14 +112,42 @@ _gssh --command \
   "sudo mkdir -p /etc/bharatquant && sudo mv /tmp/bharatquant.env /etc/bharatquant/env && sudo chmod 640 /etc/bharatquant/env && sudo chown root:bharatquant /etc/bharatquant/env"
 
 TOKEN_FILE="${KITE_ACCESS_TOKEN_FILE:-$ROOT/.kite_token.json}"
+REMOTE_TOKEN="/var/lib/bharatquant/.kite_token.json"
+SYNC_KITE_TOKEN="${SYNC_KITE_TOKEN:-0}"
+
+_token_live_ok() {
+  local path="$1"
+  (cd "$ROOT" && KITE_ACCESS_TOKEN_FILE="$path" python3.11 -c "from src.ops.healthchecks import check_token; raise SystemExit(0 if check_token(live=True) else 1)") 2>/dev/null
+}
+
 if [[ -f "$TOKEN_FILE" ]]; then
-  echo "==> Upload Kite token"
-  gcloud compute scp "${SSH_EXTRA[@]}" "$TOKEN_FILE" "${VM_NAME}:/tmp/.kite_token.json" --zone="$ZONE" --project="$PROJECT"
-  _gssh --command \
-    "sudo mv /tmp/.kite_token.json /var/lib/bharatquant/.kite_token.json && sudo chown bharatquant:bharatquant /var/lib/bharatquant/.kite_token.json && sudo chmod 600 /var/lib/bharatquant/.kite_token.json"
+  REMOTE_HAS=$(_gssh --command "test -f '$REMOTE_TOKEN' && echo yes || echo no" 2>/dev/null || echo "no")
+  if [[ "$SYNC_KITE_TOKEN" == "1" ]]; then
+    if _token_live_ok "$TOKEN_FILE"; then
+      echo "==> Upload Kite token (SYNC_KITE_TOKEN=1, local token validated)"
+      gcloud compute scp "${SSH_EXTRA[@]}" "$TOKEN_FILE" "${VM_NAME}:/tmp/.kite_token.json" --zone="$ZONE" --project="$PROJECT"
+      _gssh --command \
+        "sudo mv /tmp/.kite_token.json '$REMOTE_TOKEN' && sudo chown bharatquant:bharatquant '$REMOTE_TOKEN' && sudo chmod 600 '$REMOTE_TOKEN'"
+    else
+      echo "WARN: SYNC_KITE_TOKEN=1 but local token fails Kite validation — keeping VM token"
+    fi
+  elif [[ "$REMOTE_HAS" == "yes" ]]; then
+    echo "==> Skip Kite token upload (VM OAuth token preserved; set SYNC_KITE_TOKEN=1 to push local)"
+  elif _token_live_ok "$TOKEN_FILE"; then
+    echo "==> Upload Kite token (VM has none; local token validated)"
+    gcloud compute scp "${SSH_EXTRA[@]}" "$TOKEN_FILE" "${VM_NAME}:/tmp/.kite_token.json" --zone="$ZONE" --project="$PROJECT"
+    _gssh --command \
+      "sudo mv /tmp/.kite_token.json '$REMOTE_TOKEN' && sudo chown bharatquant:bharatquant '$REMOTE_TOKEN' && sudo chmod 600 '$REMOTE_TOKEN'"
+  else
+    echo "WARN: Local Kite token invalid — VM has no token; OAuth required at /login"
+  fi
 fi
 
 echo "==> Secrets synced to $VM_NAME"
-echo "==> Restart supervisor on VM"
-_gssh --command \
-  "sudo systemctl restart bharatquant-supervisor && sleep 2 && systemctl is-active bharatquant-supervisor" || true
+if [[ "${SKIP_SUPERVISOR_RESTART:-0}" != "1" ]]; then
+  echo "==> Restart supervisor on VM"
+  _gssh --command \
+    "sudo systemctl restart bharatquant-supervisor && sleep 2 && systemctl is-active bharatquant-supervisor" || true
+else
+  echo "==> Skip supervisor restart (deploy bootstrap will reconcile stack)"
+fi

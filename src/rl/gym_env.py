@@ -20,6 +20,7 @@ except ImportError:
 
 from ..rl.state_encoder import STATE_DIM, encode_state_from_dict
 from ..rl.action_mask import apply_action_mask, is_buy_allowed, max_intraday_drawdown_pct
+from ..costs.cost_engine import CostEngine
 
 
 if GYM_AVAILABLE:
@@ -52,6 +53,10 @@ if GYM_AVAILABLE:
             self._hold_minutes = 0.0
             self._peak_equity = starting_cash
             self._ctx: dict = {}
+            self._costs = CostEngine(slippage_bps=int(os.getenv("SLIPPAGE_BPS", "4")))
+            self._entry_cost_frac = 0.0
+            self._reward_history: list[float] = []
+            self._sharpe_lambda = float(os.getenv("RL_REWARD_SHARPE_LAMBDA", "0.15"))
 
         def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, dict]:
             super().reset(seed=seed)
@@ -62,6 +67,8 @@ if GYM_AVAILABLE:
             self._avg = 0.0
             self._hold_minutes = 0.0
             self._peak_equity = self.starting_cash
+            self._entry_cost_frac = 0.0
+            self._reward_history = []
             self._ctx = {
                 "fii_net_cr": 0.0,
                 "gift_nifty_change_pct": 0.0,
@@ -129,40 +136,70 @@ if GYM_AVAILABLE:
                 action = 0
 
             if action == 1 and self._qty == 0:
+                buy_px = self._costs.apply_slippage(ltp, "BUY")
+                fee = self._costs.compute_trade_costs("", 1, buy_px, "BUY")
                 self._qty = 1
-                self._avg = ltp
-                self._cash -= ltp
-                self._day_spent += ltp
+                self._avg = buy_px
+                self._cash -= buy_px + fee
+                self._day_spent += buy_px
                 self._hold_minutes = 0.0
+                self._entry_cost_frac = fee / max(buy_px, 1.0)
+                reward -= self._entry_cost_frac
             elif action == 2 and self._qty > 0:
-                pnl = (ltp - self._avg) * self._qty
-                reward += pnl / max(1.0, self._avg * self._qty)
-                self._cash += ltp * self._qty
+                sell_px = self._costs.apply_slippage(ltp, "SELL")
+                sell_fee = self._costs.compute_trade_costs("", self._qty, sell_px, "SELL")
+                gross = (sell_px - self._avg) * self._qty
+                net = gross - sell_fee
+                cost_basis = max(1.0, self._avg * self._qty)
+                reward += (net / cost_basis) - self._entry_cost_frac
+                self._cash += sell_px * self._qty - sell_fee
                 self._qty = 0
                 self._avg = 0.0
                 self._hold_minutes = 0.0
+                self._entry_cost_frac = 0.0
             elif halted and self._qty > 0:
-                pnl = (ltp - self._avg) * self._qty
-                reward += pnl / max(1.0, self._avg * self._qty)
-                self._cash += ltp * self._qty
+                sell_px = self._costs.apply_slippage(ltp, "SELL")
+                sell_fee = self._costs.compute_trade_costs("", self._qty, sell_px, "SELL")
+                gross = (sell_px - self._avg) * self._qty
+                net = gross - sell_fee
+                cost_basis = max(1.0, self._avg * self._qty)
+                reward += (net / cost_basis) - self._entry_cost_frac
+                self._cash += sell_px * self._qty - sell_fee
                 self._qty = 0
                 self._avg = 0.0
                 self._hold_minutes = 0.0
+                self._entry_cost_frac = 0.0
                 truncated = True
             elif self._qty > 0:
                 self._hold_minutes += 1.0
-                unreal = (ltp - self._avg) / self._avg * 100.0 if self._avg > 0 else 0.0
+                unreal = (ltp - self._avg) / self._avg if self._avg > 0 else 0.0
                 from ..rl.reward import reward_config_from_env, compute_reward
 
                 cfg = reward_config_from_env()
-                reward += compute_reward(0.0, 0.0, cfg, hold_minutes=self._hold_minutes, unrealized_pnl_pct=unreal) * 0.01
+                dd = 0.0
+                if self._peak_equity > 0:
+                    dd = max(0.0, (self._peak_equity - self._equity(ltp)) / self._peak_equity)
+                hold_r = compute_reward(
+                    unreal - self._entry_cost_frac,
+                    dd,
+                    cfg,
+                    hold_minutes=self._hold_minutes,
+                    unrealized_pnl_pct=unreal * 100.0,
+                    recent_returns=list(self._reward_history[-20:]),
+                )
+                reward += hold_r * 0.01
+                self._reward_history.append(unreal - self._entry_cost_frac)
 
             self._step += 1
             if self._step >= self.max_steps:
                 truncated = True
                 if self._qty > 0:
-                    pnl = (ltp - self._avg) * self._qty
-                    reward += pnl / max(1.0, self._avg * self._qty)
+                    sell_px = self._costs.apply_slippage(ltp, "SELL")
+                    sell_fee = self._costs.compute_trade_costs("", self._qty, sell_px, "SELL")
+                    gross = (sell_px - self._avg) * self._qty
+                    net = gross - sell_fee
+                    cost_basis = max(1.0, self._avg * self._qty)
+                    reward += (net / cost_basis) - self._entry_cost_frac
 
             return self._obs(), float(reward), terminated, truncated, {"ltp": ltp, "qty": self._qty}
 

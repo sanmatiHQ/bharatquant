@@ -24,6 +24,10 @@ class ContextUpdater:
             from ..market.market_awareness import refresh_market_awareness
 
             refresh_market_awareness(self.ctx, self.db)
+            if self.db is not None:
+                from ..agent.regime_classifier import refresh_ctx_regime
+
+                refresh_ctx_regime(self.ctx, self.db)
             logger.info(
                 "context_session",
                 extra={
@@ -32,20 +36,26 @@ class ContextUpdater:
                     "market_open": self.ctx.market_open,
                 },
             )
+        elif event.type == EventType.BAR_CLOSE_5M:
+            sym = (event.symbol or "").replace("NSE:", "")
+            p = event.payload or {}
+            close = float(p.get("close", event.price) or 0)
+            if sym in ("NIFTY50", "NIFTYBEES", "NIFTY 50") and close > 0:
+                from ..agent.regime_classifier import append_index_return
+
+                append_index_return(self.ctx, close)
+            if self.db is not None:
+                from ..agent.regime_classifier import refresh_ctx_regime
+
+                refresh_ctx_regime(self.ctx, self.db, fii_net_cr=self.ctx.fii_net_cr)
         elif event.type == EventType.FII_DII_UPDATE:
             self.ctx.fii_net_cr = float(p.get("fii_net", 0))
             self.ctx.dii_net_cr = float(p.get("dii_net", 0))
             fn = self.ctx.fii_net_cr
-            paper_learn = os.getenv("TRADING_PHASE", "paper_learn") == "paper_learn"
-            if fn < -500 and not paper_learn:
-                self.ctx.regime = "RISK_OFF"
-            elif fn > 500:
-                self.ctx.regime = "RISK_ON"
-            elif not paper_learn:
-                from ..agent.regime_classifier import classify_regime
+            if self.db is not None:
+                from ..agent.regime_classifier import refresh_ctx_regime
 
-                rs = classify_regime([fn / 10000.0], self.ctx.india_vix)
-                self.ctx.regime = rs.label if rs.label != "SIDEWAYS" else "NEUTRAL"
+                refresh_ctx_regime(self.ctx, self.db, fii_net_cr=self.ctx.fii_net_cr)
             logger.info("context_fii", extra={"fii_net": fn, "regime": self.ctx.regime})
         elif event.type == EventType.GIFT_TICK:
             self.ctx.gift_nifty_change_pct = float(p.get("change_pct", 0))
@@ -207,6 +217,7 @@ class ContextUpdater:
             EventType.IV_UPDATE,
             EventType.PREOPEN_PRICE,
             EventType.TICK,
+            EventType.BAR_CLOSE_5M,
             EventType.LLM_BIAS_UPDATE,
             EventType.FUTURES_OI_UPDATE,
             EventType.INSIDER_FILING,

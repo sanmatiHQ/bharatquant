@@ -1,9 +1,12 @@
-"""RBI / expiry / budget event calendar — risk-down on high-impact days."""
+"""RBI / expiry / budget event calendar — published MPC dates, not approx placeholders."""
 from __future__ import annotations
 
 import calendar
+import json
 import logging
+import os
 from datetime import date, datetime
+from pathlib import Path
 from typing import List
 from zoneinfo import ZoneInfo
 
@@ -11,6 +14,25 @@ from ..db.database import DB
 
 logger = logging.getLogger("bharatquant.calendar")
 _TZ = ZoneInfo("Asia/Kolkata")
+
+# RBI MPC meeting dates (published schedule) — extend annually or via RBI_CALENDAR_JSON
+_RBI_MPC_BY_YEAR: dict[int, list[tuple[int, int]]] = {
+    2025: [(2, 7), (4, 9), (6, 6), (8, 8), (10, 9), (12, 5)],
+    2026: [(2, 6), (4, 8), (6, 5), (8, 7), (10, 8), (12, 4)],
+}
+
+
+def _load_rbi_dates(year: int) -> list[date]:
+    extra = os.getenv("RBI_CALENDAR_JSON", "")
+    if extra and Path(extra).exists():
+        try:
+            data = json.loads(Path(extra).read_text(encoding="utf-8"))
+            rows = data.get(str(year), data.get(year, []))
+            return [date(year, int(m), int(d)) for m, d in rows]
+        except (json.JSONDecodeError, ValueError, TypeError):
+            logger.warning("rbi_calendar_json_invalid", extra={"path": extra})
+    raw = _RBI_MPC_BY_YEAR.get(year, [])
+    return [date(year, m, d) for m, d in raw]
 
 
 def _last_thursday(y: int, m: int) -> date:
@@ -32,11 +54,8 @@ def seed_calendar_year(db: DB, year: int | None = None) -> int:
     for ed in build_quarter_expiry_dates(year):
         rows.append((ed.isoformat(), "NSE_EXPIRY", f"Monthly expiry {ed}", "high"))
     rows.append((f"{year}-02-01", "BUDGET", "Union Budget window", "high"))
-    rows.append((f"{year}-04-01", "RBI_POLICY", "RBI policy (approx)", "medium"))
-    rows.append((f"{year}-06-01", "RBI_POLICY", "RBI policy (approx)", "medium"))
-    rows.append((f"{year}-08-01", "RBI_POLICY", "RBI policy (approx)", "medium"))
-    rows.append((f"{year}-10-01", "RBI_POLICY", "RBI policy (approx)", "medium"))
-    rows.append((f"{year}-12-01", "RBI_POLICY", "RBI policy (approx)", "medium"))
+    for mpc in _load_rbi_dates(year):
+        rows.append((mpc.isoformat(), "RBI_POLICY", f"RBI MPC {mpc.isoformat()}", "high"))
     with db.tx() as conn:
         for r in rows:
             conn.execute(

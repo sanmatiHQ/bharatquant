@@ -34,10 +34,11 @@ def _kite_ping_ms() -> float | None:
         r = httpx.get(
             "https://api.kite.trade/user/profile",
             headers={"X-Kite-Version": "3", "Authorization": f"token {api_key}:{token}"},
-            timeout=2.0,
+            timeout=5.0,
         )
         ms = (time.perf_counter() - t0) * 1000
         if r.status_code == 200:
+            ms = min(ms, 5000.0)
             _ping_cache.update({"ts": now, "latency_ms": round(ms, 1)})
             return _ping_cache["latency_ms"]
     except Exception:
@@ -87,6 +88,7 @@ def build_system_telemetry(
     engine_live: bool = False,
     kite_ok: bool | None = None,
     kite_ms: float | None = None,
+    last_tick_age_sec: int | None = None,
     fast: bool = False,
 ) -> dict[str, Any]:
     if fast:
@@ -100,8 +102,11 @@ def build_system_telemetry(
     load = _vm_load()
     halt = halt_status(db)
     slumber = slumber_status(db)
-    latency_warn = float(os.getenv("TELEMETRY_LATENCY_WARN_MS", "400"))
-    high_slippage_risk = kite_ms is not None and kite_ms > latency_warn
+    latency_warn = float(os.getenv("TELEMETRY_LATENCY_WARN_MS", "800"))
+    tape_stale = last_tick_age_sec is None or last_tick_age_sec > 30
+    high_slippage_risk = (
+        kite_ms is not None and kite_ms > latency_warn and (not ws_live or tape_stale)
+    )
 
     kite_ring = "green"
     if not kite_ok:

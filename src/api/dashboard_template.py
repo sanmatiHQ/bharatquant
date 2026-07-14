@@ -118,6 +118,11 @@ def render_dashboard(css: str, n_strategies: int) -> str:
         <button type="button" class="seg-btn active" data-chart="nifty50">N50</button>
         <button type="button" class="seg-btn" data-chart="nifty100">N100</button>
       </div>
+      <div class="seg" id="chartRange" style="margin-left:0.5rem">
+        <button type="button" class="seg-btn active" data-period="1d" data-interval="1m">1D</button>
+        <button type="button" class="seg-btn" data-period="5d" data-interval="5m">5D</button>
+        <button type="button" class="seg-btn" data-period="1m" data-interval="1d">1M</button>
+      </div>
     </div>
     <div class="chart-wrap" style="height:220px"><div id="mainChart" class="chart"></div></div>
     <p id="chartNote" class="muted" style="margin-top:0.35rem;font-size:0.72rem"></p>
@@ -194,6 +199,7 @@ def render_dashboard(css: str, n_strategies: int) -> str:
 <script>
 const POLL_MS = 3000;
 let mainChart=null, mainSeries=null, isAdmin=false, sseSource=null, _confirmCb=null;
+let chartKey='nifty50', chartPeriod='1d', chartInterval='1m', _chartPollN=0;
 
 function $(id){{return document.getElementById(id);}}
 function pnlCls(v){{return Number(v)>=0?'pos':'neg';}}
@@ -347,7 +353,10 @@ function renderFeed(f){{
   if(il.labeled_outcomes!=null){{
     const lw=il.strategy_weights||{{}};
     const top=Object.entries(lw).slice(0,2).map(([k,v])=>k+':'+Number(v).toFixed(2)).join(' ');
-    $('learnBadge').textContent=(il.signal_outcomes||0)+' signals · '+(il.labeled_outcomes||0)+' corp · '+(il.promoted_rules||0)+' rules · '+(il.rl_transitions||0)+' RL'+(top?' · '+top:'');
+    const sess=il.session_today||{{}};
+    $('learnBadge').textContent=
+      (sess.signals_today||0)+' sig · '+(sess.labeled_today||0)+' labeled · '+(sess.ticks_today||0)+' ticks · '+
+      (il.signal_outcomes||0)+' outcomes · '+(il.promoted_rules||0)+' rules'+(top?' · '+top:'');
   }}
   const timeline=corp.timeline||[];
   $('corpStream').innerHTML=timeline.length?timeline.slice(0,10).map(c=>{{
@@ -405,6 +414,8 @@ async function pollFeed(){{
       return r.json();
     }});
     renderFeed(f);
+    _chartPollN+=1;
+    if(_chartPollN%5===0) loadChart();
     fetch('/api/feed/live').then(r=>r.ok?r.json():null).then(j=>{{if(j) renderFeed(j);}}).catch(()=>{{}});
   }}
   catch(e){{
@@ -414,10 +425,12 @@ async function pollFeed(){{
 }}
 
 async function loadChart(key){{
+  if(key) chartKey=key;
   const note=$('chartNote');
   if(typeof LightweightCharts==='undefined'){{note.textContent='Chart library blocked — check network';return;}}
   try{{
-    const data=await fetch('/api/index/ohlc/'+key).then(r=>r.json());
+    const q='?period='+encodeURIComponent(chartPeriod)+'&interval='+encodeURIComponent(chartInterval);
+    const data=await fetch('/api/index/ohlc/'+chartKey+q).then(r=>r.json());
     const wrap=document.querySelector('.chart-wrap');
     const el=$('mainChart');
     if(!mainChart){{
@@ -426,7 +439,7 @@ async function loadChart(key){{
         layout:{{background:{{color:'#06080d'}},textColor:'#7d8fa8'}},
         grid:{{vertLines:{{color:'#243044'}},horzLines:{{color:'#243044'}}}},
         rightPriceScale:{{borderColor:'#243044'}},
-        timeScale:{{borderColor:'#243044',timeVisible:true,secondsVisible:false}},
+        timeScale:{{borderColor:'#243044',timeVisible:true,secondsVisible:chartInterval==='1m'}},
         localization:{{
           locale:'en-IN',
           timeFormatter:fmtChartTime,
@@ -443,15 +456,24 @@ async function loadChart(key){{
     if(bars.length){{
       mainSeries.setData(bars);
       mainChart.timeScale().fitContent();
-      note.textContent=(data.label||key)+' · '+bars.length+' bars · '+data.source+' · IST';
+      const chg=data.change_pct!=null?(data.change_pct>=0?'+':'')+Number(data.change_pct).toFixed(2)+'%':'';
+      const last=data.last!=null?Number(data.last).toLocaleString('en-IN',{{maximumFractionDigits:2}}):'';
+      note.textContent=(data.label||chartKey)+' '+last+' '+chg+' · '+bars.length+' bars · '+data.source+' · IST';
     }} else note.textContent='Chart data loading…';
   }}catch(e){{note.textContent='Chart: '+e.message;}}
 }}
 
 document.getElementById('chartSeg').addEventListener('click',e=>{{
   const btn=e.target.closest('.seg-btn'); if(!btn) return;
-  document.querySelectorAll('.seg-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('#chartSeg .seg-btn').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active'); loadChart(btn.dataset.chart);
+}});
+document.getElementById('chartRange').addEventListener('click',e=>{{
+  const btn=e.target.closest('.seg-btn'); if(!btn) return;
+  document.querySelectorAll('#chartRange .seg-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  chartPeriod=btn.dataset.period; chartInterval=btn.dataset.interval;
+  loadChart();
 }});
 
 $('haltBtn').addEventListener('click',()=>{{

@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 _IST = ZoneInfo("Asia/Kolkata")
 
+BLOCK_DEAL_START = time(8, 45)
+PRE_OPEN_ORDER = time(9, 0)
 NSE_OPEN = time(9, 15)
 OPENING_DRIVE_END = time(9, 45)
 LUNCH_START = time(12, 0)
@@ -23,11 +25,15 @@ def ist_now(now: datetime | None = None) -> datetime:
 
 
 def session_phase(now: datetime | None = None) -> str:
-    """pre_open | opening_drive | morning | lunch | afternoon | power_hour | after_close | closed."""
+    """block_deal | pre_open | opening_drive | morning | lunch | afternoon | power_hour | after_close | closed."""
     dt = ist_now(now)
     if dt.weekday() >= 5:
         return "closed"
     t = dt.time()
+    if t < BLOCK_DEAL_START:
+        return "closed"
+    if t < PRE_OPEN_ORDER:
+        return "block_deal"
     if t < NSE_OPEN:
         return "pre_open"
     if t < OPENING_DRIVE_END:

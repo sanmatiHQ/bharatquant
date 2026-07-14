@@ -13,7 +13,7 @@ from ..ops.trade_sizing import can_buy_whole_share
 from ..agent.regime_classifier import normalize_regime, regime_strategy_whitelist
 from ..agent.var_breaker import var_breach
 from ..agent.shadow_trades import record_shadow
-from ..agent.kelly_sizing import rupees_from_kelly
+from ..agent.kelly_sizing import rupees_from_kelly, kelly_fraction_for_strategy
 from ..db.database import DB
 from ..rl.rl_agent import RLAgent
 from ..rl.state_encoder import encode_state
@@ -121,7 +121,24 @@ class AgentRouter:
             if ltp <= 0 or can_buy_whole_share(ltp, cap):
                 affordable.append((score, s))
         pool = affordable if affordable else scored
+        if self.db:
+            from ..agent.strategy_lifecycle import can_allocate_capital
+
+            executable = [(sc, s) for sc, s in pool if can_allocate_capital(self.db, s.strategy_id)[0]]
+            if executable:
+                pool = executable
+            elif pool:
+                from ..agent.shadow_trades import record_fuse_candidates
+
+                record_fuse_candidates(self.db, pool, None, event_price)
+                return None
+        if not pool:
+            return None
         chosen = max(pool, key=lambda x: x[0])[1]
+        if self.db:
+            from ..agent.shadow_trades import record_fuse_candidates
+
+            record_fuse_candidates(self.db, affordable if affordable else scored, chosen, event_price)
         return self._apply_rl_boost(chosen)
 
     def _apply_rl_boost(self, chosen: Signal) -> Optional[Signal]:
@@ -184,14 +201,28 @@ class AgentRouter:
             return False, "asm_gsm_excluded"
         if signal.action == "BUY" and signal.rail.upper() == "MIS" and self.db and not mis_allowed_today(self.db):
             return False, "calendar_mis_blocked"
+        if signal.action == "BUY" and self.db:
+            from ..intelligence.strategy_correlation import is_strategy_disabled
+
+            if is_strategy_disabled(self.db, signal.strategy_id):
+                return False, "strategy_disabled_correlation"
         max_trade = float(os.getenv("MAX_RUPEES_PER_TRADE", "1000"))
         if signal.action == "BUY":
+            from ..agent.strategy_lifecycle import allocation_fraction, can_allocate_capital, record_probation_trade
+
+            ok_lc, lc_reason = can_allocate_capital(self.db, signal.strategy_id) if self.db else (True, "ok")
+            if not ok_lc:
+                return False, lc_reason
+            lc_frac = allocation_fraction(self.db, signal.strategy_id) if self.db else 1.0
+            wr, aw, al, wr_var = kelly_fraction_for_strategy(self.db, signal.strategy_id) if self.db else (0.52, 1.0, 1.0, 0.25)
             kelly_r = rupees_from_kelly(
                 float(portfolio.get("total_equity", 0)),
-                0.55,
-                1.2,
-                1.0,
+                wr,
+                aw,
+                al,
                 max_trade,
+                wr_variance=wr_var,
+                lifecycle_frac=lc_frac,
             )
             if kelly_r < 50:
                 return False, "kelly_too_small"
@@ -199,6 +230,13 @@ class AgentRouter:
                 ok_sec, sec_reason = can_add_sector(self.db, signal.symbol, kelly_r)
                 if not ok_sec:
                     return False, sec_reason
+                from ..risk.portfolio_beta import can_add_beta_exposure
+
+                ok_beta, beta_reason = can_add_beta_exposure(
+                    self.db, signal.symbol, kelly_r, float(portfolio.get("total_equity", 0))
+                )
+                if not ok_beta:
+                    return False, beta_reason
         return True, "ok"
 
     def maybe_shadow(self, sig: Signal, price: float, executed: bool) -> None:

@@ -19,6 +19,9 @@ if ! gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -1
   exit 1
 fi
 
+echo "==> [0/6] Pre-deploy smoke (local boot contract)"
+bash "$ROOT/scripts/pre_deploy_smoke.sh"
+
 SSH_OPTS=(--tunnel-through-iap)
 if ! gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT" "${SSH_OPTS[@]}" --command "echo ok" &>/dev/null 2>&1; then
   echo "WARN: IAP SSH unavailable — using direct SSH"
@@ -67,19 +70,28 @@ tar czf - -C "$ROOT" \
 
 echo "==> [4/5] Sync secrets"
 export GCP_USE_IAP_SSH="${#SSH_OPTS[@]}"
+export SKIP_SUPERVISOR_RESTART=1
 bash "$ROOT/scripts/gcp_sync_secrets.sh"
 
 echo "==> [5/5] VM bootstrap + start supervisor"
 _ssh --command "sudo bash '$REMOTE_DIR/scripts/vm_bootstrap.sh'"
 
-echo "==> [6/6] Post-deploy: RL regimes + sandbox refresh"
+echo "==> [6/7] Post-deploy gate (health, PIDs, heartbeat, HTTPS)"
+sleep 12
+bash "$ROOT/scripts/post_deploy_gate.sh"
+
+echo "==> [7/7] Post-deploy: RL regimes + sandbox refresh"
 _ssh --command "sudo -u bharatquant bash -lc 'set -a && source /etc/bharatquant/env && set +a && cd \"$REMOTE_DIR\" && python3.11 -m src.rl.rl_trainer --train-regimes --restore-gcs 2>/dev/null || true && python3.11 -m src.rl.rl_trainer --force-postmarket 2>/dev/null || true'"
 
 STATIC_IP="${GCP_STATIC_IP:-}"
+PUBLIC_HOST="${BHARATQUANT_PUBLIC_HOST:-}"
+if [[ -z "$PUBLIC_HOST" && -n "$STATIC_IP" ]]; then
+  PUBLIC_HOST="${STATIC_IP//./-}.sslip.io"
+fi
 echo ""
 echo "=== DEPLOYED ==="
-echo "Dashboard:  http://${STATIC_IP}:8080/dashboard"
-echo "Health:     http://${STATIC_IP}:8080/health"
+echo "Dashboard:  https://${PUBLIC_HOST}/dashboard"
+echo "Health:     https://${PUBLIC_HOST}/health"
 echo "Kite IP whitelist: ${STATIC_IP}"
 echo "Kite redirect:     http://${STATIC_IP}:8080/kite/callback"
 echo "SSH: gcloud compute ssh $VM_NAME --zone=$ZONE --project=$PROJECT --tunnel-through-iap"

@@ -42,17 +42,86 @@ def normalize_regime(regime: str) -> str:
     }.get(key, key)
 
 
-def recent_index_closes(db, symbol: str = "NIFTYBEES", limit: int = 60) -> List[float]:
-    """Recent closes for pre-market regime classification."""
-    sym = symbol.replace("NSE:", "")
-    for interval in ("1d", "5m"):
-        rows = db._conn.execute(
-            "SELECT close FROM bar_log WHERE symbol=? AND interval=? ORDER BY ts DESC LIMIT ?",
-            (sym, interval, limit),
-        ).fetchall()
-        if len(rows) >= 10:
-            return [float(r["close"]) for r in reversed(rows)]
+def recent_index_closes(db, symbol: str = "NIFTY50", limit: int = 60) -> List[float]:
+    """Recent closes for regime classification — NIFTY50/NIFTYBEES from bar_log."""
+    for sym in (symbol, "NIFTY50", "NIFTYBEES", "NSE:NIFTY 50"):
+        s = sym.replace("NSE:", "")
+        for interval in ("5m", "1d"):
+            rows = db._conn.execute(
+                "SELECT close FROM bar_log WHERE symbol=? AND interval=? ORDER BY ts DESC LIMIT ?",
+                (s, interval, limit),
+            ).fetchall()
+            if len(rows) >= 10:
+                return [float(r["close"]) for r in reversed(rows)]
     return []
+
+
+def apply_fii_regime_nudge(regime: str, fii_net_cr: float) -> str:
+    """FII flow tilts adjacent regimes — does not replace price-based classification."""
+    r = normalize_regime(regime)
+    if fii_net_cr < -500:
+        if r == "BULL":
+            return "SIDEWAYS"
+        if r in ("SIDEWAYS", "NEUTRAL"):
+            return "BEAR"
+        return "BEAR"
+    if fii_net_cr > 500:
+        if r == "BEAR":
+            return "SIDEWAYS"
+        if r in ("SIDEWAYS", "NEUTRAL"):
+            return "BULL"
+        return r
+    return r
+
+
+def append_index_return(ctx, close: float) -> None:
+    """Maintain rolling 5m index returns on MarketContext (max 60)."""
+    prev = getattr(ctx, "_index_last_close", None)
+    if prev is not None and prev > 0 and close > 0:
+        ret = (close - prev) / prev
+        buf: list[float] = list(getattr(ctx, "index_returns", []) or [])
+        buf.append(ret)
+        ctx.index_returns = buf[-60:]
+    ctx._index_last_close = close  # type: ignore[attr-defined]
+
+
+def refresh_ctx_regime(ctx, db, *, fii_net_cr: float | None = None) -> RegimeState:
+    """Classify from rolling index returns / bar_log; optional FII nudge."""
+    vix = float(getattr(ctx, "india_vix", 0) or 0)
+    rets = list(getattr(ctx, "index_returns", []) or [])
+    if len(rets) >= 5:
+        rs = classify_regime(rets, vix)
+    else:
+        closes = recent_index_closes(db)
+        if len(closes) >= 10:
+            rs = classify_regime_from_prices(np.array(closes, dtype=float), vix)
+        else:
+            row = db._conn.execute(
+                """
+                SELECT close FROM bar_log
+                WHERE symbol IN ('NIFTY50','NIFTYBEES') AND interval='5m'
+                ORDER BY ts DESC LIMIT 25
+                """
+            ).fetchall()
+            if len(row) >= 6:
+                prices = [float(r["close"]) for r in reversed(row)]
+                rets_db = [
+                    (prices[i] - prices[i - 1]) / prices[i - 1]
+                    for i in range(1, len(prices))
+                    if prices[i - 1] > 0
+                ]
+                rs = classify_regime(rets_db, vix) if len(rets_db) >= 5 else RegimeState("SIDEWAYS", 0.5)
+            else:
+                rs = RegimeState("SIDEWAYS", 0.5)
+    label = rs.label
+    if fii_net_cr is not None:
+        label = apply_fii_regime_nudge(label, fii_net_cr)
+    from .regime_change_detector import apply_regime_persistence, check_regime_shock
+
+    shock = check_regime_shock(db, ctx) if db is not None else False
+    effective = apply_regime_persistence(ctx, label, shock=shock)
+    ctx.regime = effective
+    return RegimeState(effective, rs.confidence)
 
 
 def classify_regime_from_prices(closes: np.ndarray, vix: float = 0.0) -> RegimeState:

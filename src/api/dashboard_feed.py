@@ -161,6 +161,7 @@ def build_live_feed(db: DB, *, fast: bool = False) -> dict[str, Any]:
         ws_live=bool(pulse.get("ws_live")),
         engine_live=engine_live,
         kite_ok=kite_ok,
+        last_tick_age_sec=pulse.get("last_tick_age_sec"),
         fast=fast,
     )
     xai = build_xai_narrative(db, ctx) if not fast else {
@@ -172,34 +173,65 @@ def build_live_feed(db: DB, *, fast: bool = False) -> dict[str, Any]:
         ),
         "lines": [session["plan_for_tomorrow"]],
     }
-    corporate = load_corporate_activity(db, lookback_days=7)
+    corporate = {} if fast else load_corporate_activity(db, lookback_days=7)
     from ..intelligence.institutional_learning import load_institutional_weights
     from ..intelligence.strategy_learning import load_strategy_learn_weights
+    from ..ops.session_ledger import _today_start_ts
 
-    inst_weights = load_institutional_weights(db)
-    strat_weights = load_strategy_learn_weights(db)
-    signal_outcomes = db._conn.execute(
-        "SELECT COUNT(*) c FROM strategy_signal_outcomes WHERE ret_15m IS NOT NULL"
+    today0 = _today_start_ts()
+    ticks_today = db._conn.execute(
+        "SELECT COUNT(*) c FROM tick_log WHERE ts >= ?", (today0,)
     ).fetchone()["c"]
-    learned_rules = db._conn.execute(
-        "SELECT COUNT(*) c FROM strategy_discovery WHERE promoted=1"
-    ).fetchone()["c"]
-    inst_outcomes = db._conn.execute(
-        "SELECT COUNT(*) c FROM corporate_event_outcomes WHERE ret_5d IS NOT NULL"
-    ).fetchone()["c"]
-    inst_rl = db._conn.execute("SELECT COUNT(*) c FROM rl_transitions").fetchone()["c"]
-    inst_shp = db._conn.execute("SELECT COUNT(*) c FROM shareholding_snapshots").fetchone()["c"]
-    institutional_learning = {
-        "labeled_outcomes": int(inst_outcomes),
-        "signal_outcomes": int(signal_outcomes),
-        "promoted_rules": int(learned_rules),
-        "rl_transitions": int(inst_rl),
-        "shareholding_snapshots": int(inst_shp),
-        "strategy_weights": {**(inst_weights.get("strategies") or {}), **(strat_weights.get("strategies") or {})},
-        "unified_weights": strat_weights.get("strategies") or {},
-        "pattern_count": len(inst_weights.get("patterns") or {}),
-        "updated_ts": strat_weights.get("ts") or inst_weights.get("ts"),
-    }
+    if fast:
+        signals_today = db._conn.execute(
+            "SELECT COUNT(*) c FROM strategy_ledger WHERE ts >= ?", (today0,)
+        ).fetchone()["c"]
+        labeled_today = db._conn.execute(
+            "SELECT COUNT(*) c FROM strategy_signal_outcomes WHERE ledger_ts >= ?", (today0,)
+        ).fetchone()["c"]
+        institutional_learning = {
+            "session_today": {
+                "signals_today": int(signals_today),
+                "labeled_today": int(labeled_today),
+                "ticks_today": int(ticks_today),
+            },
+        }
+    else:
+        inst_weights = load_institutional_weights(db)
+        strat_weights = load_strategy_learn_weights(db)
+        signal_outcomes = db._conn.execute(
+            "SELECT COUNT(*) c FROM strategy_signal_outcomes WHERE ret_15m IS NOT NULL"
+        ).fetchone()["c"]
+        learned_rules = db._conn.execute(
+            "SELECT COUNT(*) c FROM strategy_discovery WHERE promoted=1"
+        ).fetchone()["c"]
+        inst_outcomes = db._conn.execute(
+            "SELECT COUNT(*) c FROM corporate_event_outcomes WHERE ret_5d IS NOT NULL"
+        ).fetchone()["c"]
+        inst_rl = db._conn.execute("SELECT COUNT(*) c FROM rl_transitions").fetchone()["c"]
+        inst_shp = db._conn.execute("SELECT COUNT(*) c FROM shareholding_snapshots").fetchone()["c"]
+        signals_today = db._conn.execute(
+            "SELECT COUNT(*) c FROM strategy_ledger WHERE ts >= ?", (today0,)
+        ).fetchone()["c"]
+        labeled_today = db._conn.execute(
+            "SELECT COUNT(*) c FROM strategy_signal_outcomes WHERE ledger_ts >= ?", (today0,)
+        ).fetchone()["c"]
+        institutional_learning = {
+            "labeled_outcomes": int(inst_outcomes),
+            "signal_outcomes": int(signal_outcomes),
+            "promoted_rules": int(learned_rules),
+            "rl_transitions": int(inst_rl),
+            "shareholding_snapshots": int(inst_shp),
+            "strategy_weights": {**(inst_weights.get("strategies") or {}), **(strat_weights.get("strategies") or {})},
+            "unified_weights": strat_weights.get("strategies") or {},
+            "pattern_count": len(inst_weights.get("patterns") or {}),
+            "updated_ts": strat_weights.get("ts") or inst_weights.get("ts"),
+            "session_today": {
+                "signals_today": int(signals_today),
+                "labeled_today": int(labeled_today),
+                "ticks_today": int(ticks_today),
+            },
+        }
     sym_set = list({p["symbol"] for p in positions} | {q["symbol"] for q in pulse.get("live_quotes", [])})
     sparklines = {} if fast else sparklines_for_symbols(db, sym_set)
 

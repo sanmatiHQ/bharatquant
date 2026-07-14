@@ -1,24 +1,28 @@
 """
-Reward computation for RL — profit, drawdown, time-decay on stagnant holds.
+Reward computation for RL — Sortino-shaped: net return minus downside deviation penalty.
 """
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 
+from ..risk.risk_metrics import downside_deviation
+
 
 @dataclass
 class RewardConfig:
-    drawdown_penalty: float
+    sortino_lambda: float
     hold_decay_per_min: float
     loss_hold_penalty: float
+    drawdown_penalty: float  # catastrophic circuit only — secondary to downside dev
 
 
 def reward_config_from_env() -> RewardConfig:
     return RewardConfig(
-        drawdown_penalty=float(os.getenv("RL_DRAWDOWN_PENALTY", "0.5")),
+        sortino_lambda=float(os.getenv("RL_SORTINO_LAMBDA", "0.35")),
         hold_decay_per_min=float(os.getenv("RL_HOLD_DECAY_PER_MIN", "0.00015")),
         loss_hold_penalty=float(os.getenv("RL_LOSS_HOLD_PENALTY", "0.002")),
+        drawdown_penalty=float(os.getenv("RL_DRAWDOWN_PENALTY", "0.15")),
     )
 
 
@@ -29,9 +33,18 @@ def compute_reward(
     *,
     hold_minutes: float = 0.0,
     unrealized_pnl_pct: float = 0.0,
+    recent_returns: list[float] | None = None,
 ) -> float:
-    """Reward = return - drawdown penalty - time decay - loss-hold penalty."""
-    base = float(after_cost_daily_return - cfg.drawdown_penalty * drawdown)
+    """
+    Sortino-shaped reward: net return - λ·downside_deviation - hold decay.
+    Downside deviation penalizes bad volatility only, not upside variance.
+    """
+    base = float(after_cost_daily_return)
+    if recent_returns and len(recent_returns) >= 3:
+        dd_dev = downside_deviation(recent_returns)
+        base -= cfg.sortino_lambda * dd_dev
+    if drawdown > 0.05:
+        base -= cfg.drawdown_penalty * drawdown
     if hold_minutes > 5:
         base -= cfg.hold_decay_per_min * hold_minutes
     if unrealized_pnl_pct < -0.5 and hold_minutes > 15:
@@ -39,13 +52,22 @@ def compute_reward(
     return float(base)
 
 
-def compute_trade_reward(realized_pnl: float, cost_basis: float, cfg: RewardConfig) -> float:
+def compute_trade_reward(
+    realized_pnl: float,
+    cost_basis: float,
+    cfg: RewardConfig,
+    *,
+    recent_returns: list[float] | None = None,
+) -> float:
     if cost_basis <= 0:
         return 0.0
     ret = realized_pnl / cost_basis
-    penalty = cfg.drawdown_penalty * max(0.0, -ret)
-    bonus = 0.05 * max(0.0, ret) if ret > 0.01 else 0.0
-    return float(ret - penalty + bonus)
+    penalty = 0.0
+    if recent_returns and len(recent_returns) >= 3:
+        penalty = cfg.sortino_lambda * downside_deviation(recent_returns + [ret])
+    elif ret < 0:
+        penalty = cfg.sortino_lambda * abs(ret) * 0.5
+    return float(ret - penalty)
 
 
 def compute_skip_reward(reason: str, cfg: RewardConfig) -> float:

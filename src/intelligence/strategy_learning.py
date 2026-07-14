@@ -26,6 +26,7 @@ KEY_STRATEGY_WEIGHTS = "strategy_learn_weights"
 KEY_LEARNED_CUSTOM = "learned_custom_rules"
 KEY_RL_STRATEGY_SEED_TS = "strategy_rl_seed_ts"
 _RL_VERSION = os.getenv("RL_ACTIVE_VERSION", "ppo_v1")
+_H5M_SEC = 300
 _H15_SEC = 900
 _H1D_SEC = 86400
 _MIN_SAMPLES = 5
@@ -68,20 +69,30 @@ def _signed_return(signal: str, ret_pct: float) -> float:
     return 0.0
 
 
+def _min_label_age_sec() -> int:
+    """Intraday: label after 5m when session active; else 15m."""
+    try:
+        from ..strategies.market_session import is_nse_open
+
+        return _H5M_SEC if is_nse_open() else _H15_SEC
+    except Exception:
+        return _H15_SEC
+
+
 def label_strategy_signals(db: DB) -> dict[str, int]:
-    """Label strategy_ledger + shadow_trades with forward 15m/1d returns."""
+    """Label strategy_ledger + shadow_trades with forward 5m/15m/1d returns."""
     now = int(time.time())
+    min_age = _min_label_age_sec()
     labeled = 0
-    sources = (
+    rows = db._conn.execute(
         """
         SELECT ts, strategy_id, symbol, signal, confidence, price, executed
         FROM strategy_ledger
         WHERE ts < ? AND ts NOT IN (SELECT ledger_ts FROM strategy_signal_outcomes)
         ORDER BY ts ASC LIMIT 500
         """,
-        now - _H15_SEC,
-    )
-    rows = db._conn.execute(sources[0], (now - _H15_SEC,)).fetchall()
+        (now - min_age,),
+    ).fetchall()
     shadow = db._conn.execute(
         """
         SELECT ts, strategy_id, symbol, action AS signal, confidence, price, 0 AS executed
@@ -89,7 +100,7 @@ def label_strategy_signals(db: DB) -> dict[str, int]:
         WHERE ts < ? AND ts NOT IN (SELECT ledger_ts FROM strategy_signal_outcomes)
         ORDER BY ts ASC LIMIT 200
         """,
-        (now - _H15_SEC,),
+        (now - min_age,),
     ).fetchall()
     all_rows = list(rows) + list(shadow)
     with db.tx() as conn:
@@ -99,7 +110,10 @@ def label_strategy_signals(db: DB) -> dict[str, int]:
             price = float(r["price"] or 0)
             if not sym or price <= 0:
                 continue
+            ret_5m = _forward_return_pct(db, sym, ts, price, _H5M_SEC) if now >= ts + _H5M_SEC else None
             ret_15m = _forward_return_pct(db, sym, ts, price, _H15_SEC) if now >= ts + _H15_SEC else None
+            if ret_15m is None and min_age == _H5M_SEC and ret_5m is not None:
+                ret_15m = ret_5m
             ret_1d = _forward_return_pct(db, sym, ts, price, _H1D_SEC) if now >= ts + _H1D_SEC else None
             if ret_15m is None and ret_1d is None:
                 continue
@@ -133,16 +147,19 @@ def label_strategy_signals(db: DB) -> dict[str, int]:
 
 
 def promote_discovery_rules(db: DB, *, min_win_rate: float = 0.54, limit: int = 5) -> list[dict[str, Any]]:
-    """Promote top mined rules → learned custom strategies the agent can run."""
+    """Promote mined rules when binomial edge + risk-adjusted fitness are significant."""
+    from ..agent.strategy_stats import binomial_edge_p_value
+    from ..risk.risk_metrics import fitness_from_returns
+
     rows = db._conn.execute(
         """
         SELECT rule_id, symbol, conditions, win_rate, avg_return, sample_count
         FROM strategy_discovery
-        WHERE promoted=0 AND win_rate >= ? AND avg_return > 0 AND sample_count >= 20
+        WHERE promoted=0 AND avg_return > 0 AND sample_count >= 20
         ORDER BY win_rate * avg_return DESC
         LIMIT ?
         """,
-        (min_win_rate, limit),
+        (limit * 3,),
     ).fetchall()
     promoted_specs: list[dict[str, Any]] = []
     existing_row = db._conn.execute(
@@ -157,6 +174,18 @@ def promote_discovery_rules(db: DB, *, min_win_rate: float = 0.54, limit: int = 
     existing_ids = {str(x.get("id")) for x in existing}
 
     for r in rows:
+        wins = int(round(float(r["win_rate"]) * int(r["sample_count"])))
+        n = int(r["sample_count"])
+        if float(r["win_rate"]) < min_win_rate:
+            continue
+        if binomial_edge_p_value(wins, n) > 0.05:
+            continue
+        proxy_rets = [float(r["avg_return"]) if float(r["win_rate"]) >= 0.5 else -abs(float(r["avg_return"]))] * min(n, 30)
+        fit = fitness_from_returns(proxy_rets)
+        if fit.composite <= 0 or fit.sortino < float(os.getenv("LIFECYCLE_MIN_SORTINO", "0.15")):
+            continue
+        if len(promoted_specs) >= limit:
+            break
         try:
             rule = json.loads(r["conditions"])
         except json.JSONDecodeError:
@@ -220,9 +249,10 @@ def learn_unified_strategy_weights(db: DB) -> dict[str, float]:
     for sid, rets in buckets.items():
         if len(rets) < _MIN_SAMPLES:
             continue
-        avg = sum(rets) / len(rets)
-        win = sum(1 for x in rets if x > 0) / len(rets)
-        edge = math.tanh(avg / 3.0) * 0.15 + (win - 0.5) * 0.25
+        from ..risk.risk_metrics import fitness_from_returns
+
+        fit = fitness_from_returns(rets)
+        edge = math.tanh(fit.composite / 2.0) * 0.2
         weights[sid] = round(max(0.7, min(1.35, 1.0 + edge)), 4)
         counts[sid] = len(rets)
 
@@ -376,13 +406,20 @@ def refresh_all_learning(db: DB, ctx: Any) -> dict[str, Any]:
     """Master learning pass — corporate + signals + discovery + weights + RL."""
     label_sig = label_strategy_signals(db)
     label_corp = label_pending_events(db)
+    from ..intelligence.strategy_correlation import refresh_disabled_strategies
+
+    disabled = refresh_disabled_strategies(db)
+    from ..agent.strategy_lifecycle import evaluate_lifecycle_transitions
+
+    lifecycle = evaluate_lifecycle_transitions(db)
     promoted = promote_discovery_rules(db)
     strat_weights = learn_unified_strategy_weights(db)
     inst_weights = learn_institutional_weights(db)
     loaded = load_strategy_learn_weights(db)
     inst_loaded = load_institutional_weights(db)
-    ctx.strategy_learn_weights = loaded
-    ctx.institutional_weights = inst_loaded
+    if hasattr(ctx, "strategy_learn_weights"):
+        ctx.strategy_learn_weights = loaded
+        ctx.institutional_weights = inst_loaded
     rl_inst = seed_rl_transitions_from_outcomes(db)
     rl_strat = seed_rl_from_strategy_signals(db)
     return {
@@ -392,5 +429,7 @@ def refresh_all_learning(db: DB, ctx: Any) -> dict[str, Any]:
         "strategy_weights": len(strat_weights),
         "institutional_strategies": len(inst_weights),
         "rl_seed": {"institutional": rl_inst, "strategy": rl_strat},
+        "disabled_strategies": len(disabled),
+        "lifecycle_transitions": len([x for x in lifecycle if x.get("changed")]),
         "ts": int(time.time()),
     }

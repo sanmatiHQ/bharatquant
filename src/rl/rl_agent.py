@@ -22,11 +22,29 @@ class RLAgent:
         self.active_version = active_version or os.getenv("RL_ACTIVE_VERSION", "ppo_v1")
         self.db = db
         self._policy: PPOPolicy | None = None
+        self._sb3_model = None
         self._regime_version: str | None = None
         self._load_policy()
 
+    def _try_load_sb3(self, path: Path) -> bool:
+        try:
+            from stable_baselines3 import PPO
+
+            if path.exists():
+                self._sb3_model = PPO.load(str(path))
+                logger.info("rl_sb3_policy_loaded", extra={"path": str(path)})
+                return True
+        except Exception:
+            logger.debug("rl_sb3_load_skipped", exc_info=True)
+        self._sb3_model = None
+        return False
+
     def _load_policy(self) -> None:
-        path = Path(self.model_dir) / self.active_version / "policy.npz"
+        base = Path(self.model_dir) / self.active_version
+        sb3_path = base / "sb3_ppo.zip"
+        if self._try_load_sb3(sb3_path):
+            return
+        path = base / "policy.npz"
         if path.exists():
             self._policy = PPOPolicy.load(path)
             logger.info("rl_policy_loaded", extra={"path": str(path)})
@@ -64,7 +82,7 @@ class RLAgent:
         return {"regime": regime, "bucket": bucket, "loaded": False, "fallback": True}
 
     def is_learning_enabled(self) -> bool:
-        return self._policy is not None and self.active_version != "baseline"
+        return (self._policy is not None or self._sb3_model is not None) and self.active_version != "baseline"
 
     def transition_count(self) -> int:
         if not self.db:
@@ -81,10 +99,26 @@ class RLAgent:
         cash: float = 0.0,
         has_position: bool = False,
     ) -> str:
-        if self.active_version == "baseline" or self._policy is None:
+        if self.active_version == "baseline":
             score = float(state.get("score", state.get("0", 0.0)))
             return "buy" if score > 0.55 else "hold"
         vec = _state_vector(state)
+        if self._sb3_model is not None:
+            obs = np.array([vec], dtype=np.float32)
+            action, _ = self._sb3_model.predict(obs, deterministic=True)
+            a = int(action[0]) if hasattr(action, "__len__") else int(action)
+            if ltp > 0:
+                from .action_mask import is_drawdown_halted, masked_action_probs
+
+                halted = is_drawdown_halted(self.db)
+                probs = np.array([0.2, 0.5, 0.3])
+                masked = masked_action_probs(probs, cash=cash, ltp=ltp, db=self.db, has_position=has_position, drawdown_halted=halted)
+                if masked[a] <= 0:
+                    a = int(np.argmax(masked))
+            return index_action(a)
+        if self._policy is None:
+            score = float(state.get("score", state.get("0", 0.0)))
+            return "buy" if score > 0.55 else "hold"
         a, _ = self._policy.act(vec)
         probs = self._policy.act_probs(vec)
         if ltp > 0:

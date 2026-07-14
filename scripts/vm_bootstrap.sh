@@ -62,16 +62,20 @@ sudo -u "$BQ_USER" bash -lc "set -a && source '$ENV_FILE' && set +a && cd '$REPO
 sudo chmod 640 "$ENV_FILE"
 chown root:"$BQ_USER" "$ENV_FILE"
 
-# Dashboard is a child process — kill stale uvicorn so deploy picks up new routes
+# Reconcile stack — single owner of :8080 before supervisor start
 pkill -f 'python3.11 -m src.api.dashboard' 2>/dev/null || true
-rm -f /var/log/bharatquant/dashboard.pid 2>/dev/null || true
-
-# Kill duplicate/stale engine workers — supervisor will spawn exactly one
 pkill -f 'python3.11 -m src.engine.main' 2>/dev/null || true
-rm -f /var/log/bharatquant/engine.pid "${REPO_DIR}/logs/engine.pid" 2>/dev/null || true
+rm -f /var/log/bharatquant/dashboard.pid /var/log/bharatquant/engine.pid 2>/dev/null || true
+rm -f "${REPO_DIR}/logs/engine.pid" 2>/dev/null || true
+for _ in $(seq 1 20); do
+  if ! ss -tln 2>/dev/null | grep -q ':8080 '; then
+    break
+  fi
+  sleep 0.5
+done
 
 systemctl restart bharatquant-supervisor || systemctl start bharatquant-supervisor
-sleep 3
+sleep 8
 systemctl is-active bharatquant-supervisor && echo "supervisor: active" || echo "supervisor: check logs"
 
 if [[ -f "$REPO_DIR/deploy/logrotate-bharatquant.conf" ]]; then

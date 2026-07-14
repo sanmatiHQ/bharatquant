@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 from ..costs.cost_engine import CostEngine
+from ..risk.risk_metrics import fitness_from_returns
 from ..db.database import DB
 from .ppo_trainer import PPOPolicy
 from .state_encoder import STATE_DIM
@@ -104,6 +105,7 @@ def evaluate_policy_on_bars(
     costs = CostEngine(slippage_bps=int(os.getenv("SLIPPAGE_BPS", "4")))
     cutoff = _lookback_cutoff_ts(lookback)
     symbols = _symbols_for_eval(db, max_sym)
+    total_period_returns: list[float] = []
     total_reward = 0.0
     total_bars = 0
     sym_used = 0
@@ -116,6 +118,7 @@ def evaluate_policy_on_bars(
         closes = [float(b["close"]) for b in bars]
         position = 0
         entry_px = 0.0
+        sym_returns: list[float] = []
 
         for i in range(10, len(bars) - 1):
             state = _encode_bar_state(closes, i)
@@ -124,24 +127,31 @@ def evaluate_policy_on_bars(
             nxt = closes[i + 1]
             ret = (nxt - px) / px if px > 0 else 0.0
 
-            if action == 1 and position == 0:  # buy
+            if action == 1 and position == 0:
                 fee_pct = costs.round_trip_cost_inr(1, px) / max(px, 1) * 0.5
                 position = 1
                 entry_px = px
-                total_reward -= fee_pct
-            elif action == 2 and position == 1:  # sell
+                sym_returns.append(-fee_pct)
+            elif action == 2 and position == 1:
                 gross = (px - entry_px) / entry_px if entry_px > 0 else 0.0
                 fee_pct = costs.round_trip_cost_inr(1, px) / max(px, 1) * 0.5
-                total_reward += gross - fee_pct
+                net = gross - fee_pct
+                sym_returns.append(net)
                 position = 0
                 entry_px = 0.0
             elif position == 1:
-                total_reward += ret * 0.25
+                sym_returns.append(ret * 0.25)
             total_bars += 1
 
-    score = float(total_reward)
+        total_period_returns.extend(sym_returns)
+
+    fit = fitness_from_returns(total_period_returns)
+    score = float(fit.composite)
     return {
         "score": score,
+        "sortino": fit.sortino,
+        "calmar": fit.calmar,
+        "max_drawdown": fit.max_drawdown,
         "bars": total_bars,
         "symbols": sym_used,
         "lookback_days": lookback,
@@ -156,17 +166,25 @@ def compare_policies(
 ) -> dict:
     """Return comparison; candidate must not be significantly worse than stable."""
     tol_pct = float(os.getenv("RL_SHADOW_MAX_REGRESSION_PCT", "2.0"))
+    min_bars = int(os.getenv("RL_SHADOW_MIN_BARS", "500"))
+    min_symbols = int(os.getenv("RL_SHADOW_MIN_SYMBOLS", "3"))
     stable = evaluate_policy_on_bars(db, stable_path)
     candidate = evaluate_policy_on_bars(db, candidate_path)
     s = stable["score"]
     c = candidate["score"]
-    # If stable has near-zero history, allow promote when candidate has data
-    if stable["bars"] < 100 and candidate["bars"] >= 100:
-        passed = True
-        reason = "stable_insufficient_history"
+
+    if candidate["bars"] < min_bars or candidate["symbols"] < min_symbols:
+        passed = False
+        reason = "candidate_insufficient_history"
+    elif stable["bars"] < min_bars:
+        passed = False
+        reason = "deferred_insufficient_stable_history"
+    elif c <= 0.0 or candidate.get("sortino", 0) <= 0:
+        passed = False
+        reason = "candidate_non_positive_fitness"
     elif s == 0 and c == 0:
-        passed = True
-        reason = "both_neutral"
+        passed = False
+        reason = "both_neutral_no_promote"
     else:
         floor = s - abs(s) * (tol_pct / 100.0) - tol_pct / 100.0
         passed = c >= floor

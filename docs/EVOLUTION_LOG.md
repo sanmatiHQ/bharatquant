@@ -878,3 +878,127 @@ Every 30m (engine) + post-market:
 - `calendar_activity`, `sentiment_regime`
 
 ---
+
+## 2026-07-14 — Live N50/N100 charts + intraday learning visibility
+
+### Symptoms
+- Dashboard charts static (Yahoo one-shot); no timeframe controls
+- User expected 08:45 IST block-deal window + live index movement
+- Learning badge showed cumulative counts only — no today ticks/signals/labeled
+
+### Fixes
+- `fetch_index_ohlc(period, interval)` — Kite historical primary, NSE spot `last`/`change_pct`, Yahoo/DB fallback
+- `index_quote_poller` — Kite LTP every 30s from `block_deal` through `power_hour` → `tick_log` + rolling 5m `bar_log`
+- Dashboard: 1D/5D/1M range buttons; chart auto-refresh every ~15s on feed poll
+- `session_today` on feed: `signals_today`, `labeled_today`, `ticks_today`
+- Strategy labeling: 5m horizon when `is_nse_open()`; learn loop 5m cadence intraday (was 30m)
+
+### Verified (VM)
+- `GET /api/index/ohlc/nifty50?period=1d&interval=1m` → `kite:NSE:NIFTY 50:1m`, 496 bars, live last
+- Feed: `ws_live=true`, ~529 ticks/min, `session_today` populated
+
+---
+
+## 2026-07-14 — Brain audit fixes: regime, Kelly, RL costs, shadow gate, cost-edge
+
+### Audit finding
+Layer 6 "brain" was wired but several adaptive pieces were theater: regime always SIDEWAYS (1-element FII input), Kelly hardcoded 0.55/1.2/1.0 + mystery ×0.02, RL reward gross-only, shadow gate auto-pass on thin history, cost-edge bypassed for MIS/conf≥0.82.
+
+### Fixes
+1. **Regime** — `refresh_ctx_regime()` reads NIFTY50/NIFTYBEES bar_log (≥10 closes) → `classify_regime_from_prices`; wired on FII update, session events, `BAR_CLOSE_5M`; FII ±500cr still overrides to BEAR/BULL
+2. **Kelly** — `kelly_stats.kelly_inputs_for_strategy()` from `strategy_signal_outcomes`; removed ×0.02 shrink; router uses per-strategy stats
+3. **RL gym** — buy/sell rewards net of slippage + Zerodha fees via `CostEngine`
+4. **Shadow gate** — requires ≥500 bars + ≥3 symbols; `both_neutral` and thin stable history → **reject** promote
+5. **Cost-edge** — removed MIS opportunistic + confidence≥0.82 bypasses; always enforce `expected >= min_move`
+
+### Tests
+- `tests/test_audit_fixes.py` — regime from bars, Kelly from outcomes, shadow thin-history reject
+- 135 passed
+
+### Deferred (next batch)
+- Prune `advanced_quant.py` redundant strategies / strategy_lab significance gate
+- Portfolio correlation basket control
+- SB3→live policy export fidelity
+- True Thompson bandit (current bandit weights already flow to router hourly)
+
+---
+
+## 2026-07-14 — Audit items 0–10 completion (intelligence honesty batch 2)
+
+### Root causes closed
+| # | Issue | Fix |
+|---|--------|-----|
+| 0 | PaperBroker slippage favoured trader | `PaperBroker` delegates to `CostEngine.apply_slippage` only (BUY above LTP, SELL below) |
+| 1 | Regime never ran vol/trend math | Rolling `index_returns` deque on `BAR_CLOSE_5M`; FII ±500cr nudges adjacent regimes only |
+| 2 | Kelly hardcoded 0.55/1.2/1.0 + silent ×0.02 | `strategy_stats.py` — Bayesian Beta(3,3), cold-start 0.5/1.0; `KELLY_SAFETY_SCALAR` env |
+| 3 | Bandit rewarded self-reported confidence | Thompson sampling from realized win/loss counts (`random.betavariate`) |
+| 4 | RL reward gross-only | `gym_env` net buy/sell via `CostEngine`; hold steps pass net unrealized; variance penalty |
+| 5 | Shadow gate rubber-stamp | Requires ≥500 bars + ≥3 symbols; `deferred_insufficient_stable_history`; no neutral auto-pass |
+| 6 | SB3→numpy export lossy | `RLAgent` loads `sb3_ppo.zip` at inference when present; numpy export is fallback only |
+| 7 | Strategy redundancy + noise promotion | `strategy_correlation.refresh_disabled_strategies` in learn loop; binomial p<0.05 on `promote_discovery_rules` + `StrategyLabStrategy` |
+| 8 | Cost-edge bypass + hardcoded edge table | Removed `_STRATEGY_EDGE_PCT`; `expected_move_pct_for_strategy()` from outcomes |
+| 9 | No portfolio beta cap | `portfolio_beta.can_add_beta_exposure()` in `router.risk_veto()` |
+| 10 | RBI approx dates + RSI proxy | Published MPC calendar 2025/2026; Wilder RSI in `strategy_discovery` |
+
+### Tests
+- `tests/test_audit_fixes.py` — 18 cases covering slippage direction, regime deque/FII nudge, Kelly cold-start, Thompson bandit, shadow gate, binomial promotion, beta cap, RBI dates, RSI variance
+- **150 passed**, 5 skipped (`python3.11 -m pytest -q`)
+
+### Deploy
+- Run `gcp_deploy.sh` after market close or during paper session to refresh VM stack
+
+---
+
+## 2026-07-14 — Risk-adjusted fitness everywhere (Sortino/Calmar learning objective)
+
+### Strategic shift
+Swapped fitness function from raw/cumulative PnL to **risk-adjusted, after-cost returns** across RL reward, Kelly, bandit, promotion gates, and strategy lifecycle.
+
+### Changes
+| Component | Before | After |
+|-----------|--------|-------|
+| **RL reward** (`reward.py`) | return − fixed drawdown penalty | Sortino-shaped: `net_return − λ·downside_deviation` |
+| **Kelly** (`kelly_sizing.py`) | fixed ¼-Kelly | adaptive fraction shrinks when win-rate variance is high (`KELLY_WR_VAR_CAP`, `KELLY_NOISE_SHRINK`) |
+| **Shadow gate** (`shadow_backtest.py`) | cumulative net score | Calmar + Sortino composite fitness |
+| **Promotion** (`strategy_learning`, `advanced_quant`) | positive PnL / win rate | binomial + Sortino/Calmar composite |
+| **Bandit** (`bandit.py`) | Thompson on outcomes | + diversity cap (`BANDIT_MAX_WEIGHT=0.40`) |
+| **Credit assignment** (`shadow_trades.py`, `router.fuse`) | winner only | all fuse competitors logged to shadow_trades |
+| **Regime switching** (`regime_change_detector.py`) | FII event cadence | vol/return shock trigger + 3-bar persistence dampener |
+| **Lifecycle** (`strategy_lifecycle.py`) | permanent strategy seats | candidacy → probation (10% cap) → full → auto-demotion |
+
+### New modules
+- `src/risk/risk_metrics.py` — downside deviation, Sortino, Calmar, composite fitness
+- `src/agent/regime_change_detector.py` — intraday shock + persistence
+- `src/agent/strategy_lifecycle.py` — governance state machine
+
+### Tests
+- `tests/test_risk_adjusted_fitness.py` — 11 cases
+- **161 passed**, 5 skipped
+
+### Deploy (2026-07-14 ~13:00 IST)
+- `gcp_deploy.sh` → VM `bharatquant-engine` @ 0.0.0.0 — post_deploy_gate ALL PASS
+- Kite token valid (CI1482); engine heartbeat fresh; RL promotion held (strict Calmar/Sortino gate)
+
+---
+
+## 2026-07-12 — Engine crash loop / supervisor orphans (prior entry)
+
+### Audit finding
+2. **Engine crash loop** — `persist_engine_phase(db, "BOOT")` arity mismatch → zombie PID, no ticks
+3. **Supervisor orphans** — `Popen(start_new_session=True)` survived systemd restart → port 8080 fight → Caddy 502
+4. **OAuth/engine split** — token saved in dashboard; engine needed file watcher + restart flag (30s)
+
+### Fixes shipped
+- `gcp_sync_secrets.sh`: skip VM token upload by default; `SYNC_KITE_TOKEN=1` only if local token validates live
+- `kite_token_watcher.py`: mtime poll → invalidate cache → `_restart_feed()` within ~10s
+- `market_supervisor._bootstrap_stack()`: kill orphan engine/dashboard, wait for :8080, then start
+- `persist_engine_phase(db)` call fixed in `main.py`
+- **`scripts/pre_deploy_smoke.sh`** — pytest + boot contract before rsync
+- **`scripts/post_deploy_gate.sh`** — health HTTPS+local, single PID, heartbeat, kite auth, no bind errors
+- `gcp_deploy.sh` runs smoke → deploy → gate (deploy fails loud if stack unhealthy)
+
+### Prevention
+- Never scp hotfix without full deploy + gate
+- VM owns Kite token; laptop token never overwrites production OAuth
+
+---

@@ -178,9 +178,33 @@ else
   fail "VM live NSE shareholding — $LIVE"
 fi
 
+# Single dashboard (no port-8080 fight)
+DASH_COUNT=$(_ssh --command "pgrep -f '^/usr/bin/python3.11 -m src.api.dashboard\$' 2>/dev/null | wc -l" 2>/dev/null | tr -d '[:space:]')
+if [[ "${DASH_COUNT:-0}" -eq 1 ]]; then
+  pass "single dashboard process (count=1)"
+else
+  fail "dashboard process count=$DASH_COUNT (want 1)"
+fi
+
+# Kite token (VM OAuth preserved on deploy)
+AUTH=$(_ssh --command "curl -sf http://127.0.0.1:8080/api/auth/status" 2>/dev/null || echo '{}')
+if echo "$AUTH" | python3.11 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('valid') else 1)" 2>/dev/null; then
+  pass "Kite token valid on VM"
+else
+  warn "Kite token invalid — OAuth at /login required"
+fi
+
+# Public HTTPS health (Caddy → dashboard)
+HTTPS_CODE=$(curl -sk -o /dev/null -w "%{http_code}" "${BASE_URL}/health" 2>/dev/null || echo "000")
+if [[ "$HTTPS_CODE" == "200" ]]; then
+  pass "HTTPS GET /health → 200"
+else
+  fail "HTTPS GET /health → $HTTPS_CODE"
+fi
+
 # Supervisor / engine process
-SUP=$(_ssh --command "systemctl is-active bharatquant-supervisor 2>/dev/null; pgrep -f '/usr/bin/python3.11 -m src.engine.main' | wc -l" 2>&1 || true)
-ENGINE_COUNT=$(echo "$SUP" | tail -1 | tr -d '[:space:]')
+SUP=$(_ssh --command "systemctl is-active bharatquant-supervisor 2>/dev/null" 2>&1 || true)
+ENGINE_COUNT=$(_ssh --command "pgrep -f '^/usr/bin/python3.11 -m src.engine.main\$' 2>/dev/null | wc -l" 2>/dev/null | tr -d '[:space:]')
 if echo "$SUP" | grep -q "^active"; then
   pass "bharatquant-supervisor systemd active"
 else
