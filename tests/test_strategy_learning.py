@@ -88,6 +88,23 @@ def _seed_uptrend_bars(db: DB, symbol: str = "INFY", n: int = 50) -> None:
     db._conn.commit()
 
 
+def test_persist_discoveries_writes_outcomes(db):
+    from src.intelligence.strategy_discovery import load_discovery_returns, persist_discoveries
+
+    items = [{
+        "rule_id": "test_rule_INFY",
+        "symbol": "INFY",
+        "conditions": "{}",
+        "win_rate": 0.6,
+        "avg_return": 0.3,
+        "sample_count": 3,
+        "forward_returns": [(100, 0.01), (200, 0.02), (300, -0.005)],
+    }]
+    assert persist_discoveries(db, items) == 1
+    rets = load_discovery_returns(db, "test_rule_INFY")
+    assert rets == [0.01, 0.02, -0.005]
+
+
 def test_promote_discovery_rules(db):
     _seed_uptrend_bars(db)
     db._conn.execute(

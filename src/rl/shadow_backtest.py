@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 from ..costs.cost_engine import CostEngine
-from ..risk.risk_metrics import fitness_from_returns
+from ..risk.risk_metrics import PERIODS_PER_YEAR_5M_BAR, fitness_from_returns
 from ..db.database import DB
 from .ppo_trainer import PPOPolicy
 from .state_encoder import STATE_DIM
@@ -145,7 +145,7 @@ def evaluate_policy_on_bars(
 
         total_period_returns.extend(sym_returns)
 
-    fit = fitness_from_returns(total_period_returns)
+    fit = fitness_from_returns(total_period_returns, periods_per_year=PERIODS_PER_YEAR_5M_BAR)
     score = float(fit.composite)
     return {
         "score": score,

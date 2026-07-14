@@ -149,7 +149,6 @@ def label_strategy_signals(db: DB) -> dict[str, int]:
 def promote_discovery_rules(db: DB, *, min_win_rate: float = 0.54, limit: int = 5) -> list[dict[str, Any]]:
     """Promote mined rules when binomial edge + risk-adjusted fitness are significant."""
     from ..agent.strategy_stats import binomial_edge_p_value
-    from ..risk.risk_metrics import fitness_from_returns
 
     rows = db._conn.execute(
         """
@@ -184,12 +183,16 @@ def promote_discovery_rules(db: DB, *, min_win_rate: float = 0.54, limit: int = 
             rule = json.loads(r["conditions"])
         except json.JSONDecodeError:
             continue
-        from .strategy_discovery import forward_returns_for_discovery_rule
+        from .strategy_discovery import forward_returns_for_discovery_rule, load_discovery_returns
+        from ..risk.risk_metrics import fitness_from_returns, periods_per_year_discovery
 
-        returns = forward_returns_for_discovery_rule(db, str(r["symbol"] or ""), rule)
+        returns = load_discovery_returns(db, str(r["rule_id"]))
+        if len(returns) < 20:
+            returns = forward_returns_for_discovery_rule(db, str(r["symbol"] or ""), rule)
         if len(returns) < 20:
             continue
-        fit = fitness_from_returns(returns, periods_per_year=float(os.getenv("DISCOVERY_PERIODS_PER_YEAR", "6552")))
+        ppy = periods_per_year_discovery(len(returns))
+        fit = fitness_from_returns(returns, periods_per_year=ppy)
         if fit.composite <= 0 or fit.sortino < float(os.getenv("LIFECYCLE_MIN_SORTINO", "0.15")):
             continue
         if len(promoted_specs) >= limit:
@@ -253,9 +256,9 @@ def learn_unified_strategy_weights(db: DB) -> dict[str, float]:
     for sid, rets in buckets.items():
         if len(rets) < _MIN_SAMPLES:
             continue
-        from ..risk.risk_metrics import fitness_from_returns
+        from ..risk.risk_metrics import PERIODS_PER_YEAR_SIGNAL, fitness_from_returns
 
-        fit = fitness_from_returns(rets)
+        fit = fitness_from_returns(rets, periods_per_year=PERIODS_PER_YEAR_SIGNAL)
         edge = math.tanh(fit.composite / 2.0) * 0.2
         weights[sid] = round(max(0.7, min(1.35, 1.0 + edge)), 4)
         counts[sid] = len(rets)

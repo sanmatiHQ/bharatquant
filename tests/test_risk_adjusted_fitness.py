@@ -11,9 +11,12 @@ from src.agent.strategy_lifecycle import allocation_fraction, ensure_lifecycle_r
 from src.agent.bandit import _apply_diversity_cap
 from src.db.database import DB, DBConfig
 from src.risk.risk_metrics import (
+    PERIODS_PER_YEAR_5M_BAR,
+    PERIODS_PER_YEAR_SIGNAL,
     calmar_ratio,
     downside_deviation,
     fitness_from_returns,
+    max_drawdown_from_returns,
     sortino_ratio,
 )
 from src.rl.reward import compute_reward, reward_config_from_env
@@ -92,6 +95,35 @@ def test_lifecycle_core_full_allocation(db):
 
 
 def test_fitness_composite_from_returns():
-    fit = fitness_from_returns([0.01, 0.008, 0.012, 0.009, 0.011] * 4)
+    fit = fitness_from_returns(
+        [0.01, 0.008, 0.012, 0.009, 0.011] * 4,
+        periods_per_year=PERIODS_PER_YEAR_SIGNAL,
+    )
     assert fit.composite > 0
     assert fit.sortino > 0
+
+
+def test_identical_proxy_series_not_inflated():
+    """Repeated identical returns (<20) must not inflate composite via zero-variance fallbacks."""
+    fake = [0.01] * 15
+    fit = fitness_from_returns(fake, periods_per_year=PERIODS_PER_YEAR_SIGNAL)
+    assert fit.composite == 0.0
+    assert fit.sortino == 0.0
+    assert fit.calmar == 0.0
+
+
+def test_calmar_annualized_hand_computed():
+    returns = [0.01, 0.02, -0.005, 0.015, 0.01]
+    n = len(returns)
+    equity = 1.0
+    for r in returns:
+        equity *= 1.0 + r
+    ppy = 252
+    expected_ann = equity ** (ppy / n) - 1.0
+    mdd = max_drawdown_from_returns(returns)
+    expected = expected_ann / mdd
+    assert abs(calmar_ratio(returns, periods_per_year=ppy) - expected) < 1e-9
+
+
+def test_shadow_backtest_periods_per_year_constant():
+    assert PERIODS_PER_YEAR_5M_BAR == 18_900

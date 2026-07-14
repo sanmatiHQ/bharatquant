@@ -980,6 +980,28 @@ Swapped fitness function from raw/cumulative PnL to **risk-adjusted, after-cost 
 - **calmar_ratio** — actually annualizes; removed inflation fallbacks in Sortino/Calmar
 - **corporate_profit_tilt** — removed hardcoded multipliers; learned `pattern_multiplier` only
 
+### Hotfix 2 (2026-07-14) — discovery outcomes + Calmar annualization + n≥20 trust gate
+- **`discovery_outcomes` table** — per-hit forward returns persisted at mining time (`persist_discoveries`); `promote_discovery_rules` reads `load_discovery_returns()` first (recompute fallback)
+- **`risk_metrics.py`** — Sortino/Calmar near-zero-variance fallbacks require `n >= 20` else return 0.0 (blocks proxy-artifact inflation)
+- **`calmar_ratio`** — compound annualization `equity ** (ppy/n) - 1`; `periods_per_year` threaded explicitly:
+  - `shadow_backtest` → `PERIODS_PER_YEAR_5M_BAR` (18,900)
+  - `strategy_stats` / `learn_unified_strategy_weights` → `PERIODS_PER_YEAR_SIGNAL` (504 default)
+  - `promote_discovery_rules` → `periods_per_year_discovery(n)` extrapolated from 14d lookback
+- **Tests** — identical series n<20 → composite 0.0; hand-computed Calmar; `discovery_outcomes` persist test
+
+### Go-live checklist (clock starts post this deploy — numeric, non-negotiable)
+| Gate | Threshold |
+|------|-----------|
+| Clean paper window | ≥ 6 trading weeks from fix-deploy date |
+| Sample size | ≥ 150 closed trades system-wide |
+| System composite fitness (Sortino/Calmar blend) | ≥ 0.5 sustained over window |
+| Max observed drawdown | ≤ **18%** — breach resets clock |
+| Strategies at `full` lifecycle via real promotion gate | ≥ 5 |
+| Live/paper parity dry-run | ≥ 2 weeks; `slippage_analysis.py` residual small + unbiased |
+| F&O/options | Zero candidacy until Greeks/VaR/defined-risk infra verified |
+| Capital graduation | Start ≤10% intended capital; 4-week probation; auto rollback if parity gap exceeds threshold |
+| New edge strategies | Candidacy only; run `strategy_correlation.py` — reject/replace if ρ>0.7 with running strategy |
+
 ---
 
 ## 2026-07-12 — Engine crash loop / supervisor orphans (prior entry)

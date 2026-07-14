@@ -164,6 +164,7 @@ def mine_bar_log(db: DB, lookback_days: int = 14, min_samples: int = 20) -> list
             hits = 0
             wins = 0
             ret_sum = 0.0
+            hit_returns: list[tuple[int, float]] = []
             for i in range(20, len(bars) - 4):
                 feats = _bar_features_at(bars, closes, highs, lows, vols, vol_avg, i)
                 val = feats.get(rule["field"], 0)
@@ -177,6 +178,7 @@ def mine_bar_log(db: DB, lookback_days: int = 14, min_samples: int = 20) -> list
                 ret_sum += fr
                 if fr > 0:
                     wins += 1
+                hit_returns.append((int(bars[i]["ts"]), fr))
             if hits < min_samples:
                 continue
             win_rate = wins / hits
@@ -190,9 +192,23 @@ def mine_bar_log(db: DB, lookback_days: int = 14, min_samples: int = 20) -> list
                 "win_rate": round(win_rate, 3),
                 "avg_return": round(avg_ret * 100, 3),
                 "sample_count": hits,
+                "forward_returns": hit_returns,
             })
     discoveries.sort(key=lambda x: x["win_rate"] * x["avg_return"], reverse=True)
     return discoveries[:15]
+
+
+def load_discovery_returns(db: DB, rule_id: str) -> list[float]:
+    """Per-signal forward returns persisted at mining time (preferred for promotion fitness)."""
+    rows = db._conn.execute(
+        """
+        SELECT forward_return FROM discovery_outcomes
+        WHERE rule_id=?
+        ORDER BY bar_ts
+        """,
+        (rule_id,),
+    ).fetchall()
+    return [float(r["forward_return"]) for r in rows]
 
 
 def persist_discoveries(db: DB, items: list[dict[str, Any]]) -> int:
@@ -200,13 +216,14 @@ def persist_discoveries(db: DB, items: list[dict[str, Any]]) -> int:
     n = 0
     with db.tx() as conn:
         for d in items:
+            rid = d["rule_id"]
             conn.execute(
                 """
                 INSERT INTO strategy_discovery(rule_id, symbol, conditions, win_rate, avg_return, sample_count, discovered_ts)
                 VALUES (?,?,?,?,?,?,?)
                 """,
                 (
-                    d["rule_id"],
+                    rid,
                     d.get("symbol"),
                     d["conditions"],
                     d["win_rate"],
@@ -215,6 +232,15 @@ def persist_discoveries(db: DB, items: list[dict[str, Any]]) -> int:
                     ts,
                 ),
             )
+            conn.execute("DELETE FROM discovery_outcomes WHERE rule_id=?", (rid,))
+            for bar_ts, fr in d.get("forward_returns", []):
+                conn.execute(
+                    """
+                    INSERT INTO discovery_outcomes(rule_id, bar_ts, forward_return, discovered_ts)
+                    VALUES (?,?,?,?)
+                    """,
+                    (rid, int(bar_ts), float(fr), ts),
+                )
             n += 1
     return n
 

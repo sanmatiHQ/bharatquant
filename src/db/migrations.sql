@@ -375,3 +375,14 @@ CREATE TABLE IF NOT EXISTS strategy_lifecycle (
   last_fitness REAL DEFAULT 0,
   demoted_ts INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS discovery_outcomes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_id TEXT NOT NULL,
+  bar_ts INTEGER NOT NULL,
+  forward_return REAL NOT NULL,
+  discovered_ts INTEGER NOT NULL,
+  UNIQUE(rule_id, bar_ts)
+);
+
+CREATE INDEX IF NOT EXISTS idx_discovery_outcomes_rule ON discovery_outcomes(rule_id);

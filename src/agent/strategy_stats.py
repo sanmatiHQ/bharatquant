@@ -151,6 +151,6 @@ def strategy_return_series(db: DB, strategy_id: str) -> list[float]:
 
 
 def strategy_fitness(db: DB, strategy_id: str):
-    from ..risk.risk_metrics import fitness_from_returns
+    from ..risk.risk_metrics import PERIODS_PER_YEAR_SIGNAL, fitness_from_returns
 
-    return fitness_from_returns(strategy_return_series(db, strategy_id))
+    return fitness_from_returns(strategy_return_series(db, strategy_id), periods_per_year=PERIODS_PER_YEAR_SIGNAL)
