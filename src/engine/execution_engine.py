@@ -90,7 +90,34 @@ class ExecutionEngine:
                     delivery_id,
                 ),
             )
+        if sig.action in ("BUY", "SELL"):
+            self._record_meta_row(sig, ts)
         return delivery_id
+
+    def _record_meta_row(self, sig: Signal, ts: int) -> None:
+        """Log meta-model training features (calibrated confidence + context) at
+        the moment the decision was made, not when it's later labeled — context
+        drifts, and the model needs to learn from what was actually known then."""
+        try:
+            from ..agent.confidence_calibration import calibrate_confidence
+            from ..agent.meta_model import record_meta_row
+
+            calibrated = calibrate_confidence(self.db, sig.strategy_id, sig.confidence)
+            ctx = self.router.ctx
+            record_meta_row(
+                self.db,
+                ledger_ts=ts,
+                strategy_id=sig.strategy_id,
+                symbol=sig.symbol,
+                raw_confidence=sig.confidence,
+                calibrated_confidence=calibrated,
+                regime=getattr(ctx, "regime", "SIDEWAYS"),
+                india_vix=float(getattr(ctx, "india_vix", 15.0) or 15.0),
+                fii_net_cr=float(getattr(ctx, "fii_net_cr", 0.0) or 0.0),
+                bandit_weight=self.router._weights.get(sig.strategy_id, 1.0),
+            )
+        except Exception:
+            logger.exception("meta_row_record_failed")
 
     def _update_strategy_pnl(self, strategy_id: str, pnl_delta: float) -> None:
         ts = int(time.time())

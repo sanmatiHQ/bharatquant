@@ -60,6 +60,24 @@ class AgentRouter:
             signal.meta = {**(signal.meta or {}), "corp_profit": reasons, "corp_mult": round(mult, 3)}
         return min(0.98, max(0.0, conf))
 
+    def _apply_meta_model(self, conf: float, strategy_id: str) -> float:
+        """Learned decision function over calibrated confidence + context. Falls
+        back to conf unchanged if the model hasn't trained yet (not enough
+        labeled history) — same cold-start discipline as confidence_calibration."""
+        if not self.db:
+            return conf
+        from .meta_model import predict_meta_probability
+
+        p = predict_meta_probability(
+            self.db,
+            calibrated_confidence=conf,
+            regime=self.ctx.regime,
+            india_vix=float(getattr(self.ctx, "india_vix", 15.0) or 15.0),
+            fii_net_cr=float(getattr(self.ctx, "fii_net_cr", 0.0) or 0.0),
+            bandit_weight=self._weights.get(strategy_id, 1.0),
+        )
+        return p if p is not None else conf
+
     def _obi_adjust_confidence(self, signal: Signal) -> float:
         """Backward-compatible alias."""
         return self._adjust_confidence(signal)
@@ -99,6 +117,7 @@ class AgentRouter:
         for s in combined:
             w = self._weights.get(s.strategy_id, 1.0)
             conf = s.confidence if s.strategy_id == "signal_combiner" else self._adjust_confidence(s)
+            conf = self._apply_meta_model(conf, s.strategy_id)
             learn_mult = strategy_weight_multiplier(learned, s.strategy_id)
             if self.db:
                 from ..agent.strategy_lifecycle import get_lifecycle_state

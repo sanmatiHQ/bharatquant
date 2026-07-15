@@ -473,3 +473,21 @@ CREATE TABLE IF NOT EXISTS user_suggestions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_suggestions_status ON user_suggestions(status, ts DESC);
+
+CREATE TABLE IF NOT EXISTS meta_model_rows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  ledger_ts INTEGER NOT NULL,
+  strategy_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  raw_confidence REAL,
+  calibrated_confidence REAL,
+  regime TEXT,
+  india_vix REAL,
+  fii_net_cr REAL,
+  bandit_weight REAL,
+  label INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_meta_model_rows_label ON meta_model_rows(label, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_meta_model_rows_ledger_ts ON meta_model_rows(ledger_ts);

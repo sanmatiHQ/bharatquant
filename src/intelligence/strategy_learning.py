@@ -460,12 +460,18 @@ def refresh_all_learning(db: DB, ctx: Any) -> dict[str, Any]:
         ctx.institutional_weights = inst_loaded
     rl_inst = seed_rl_transitions_from_outcomes(db)
     rl_strat = seed_rl_from_strategy_signals(db)
+    from ..agent.meta_model import train_meta_model
+
+    meta = train_meta_model(db)
     return {
         "signals_labeled": label_sig,
         "corporate_labeled": label_corp,
         "promoted_rules": len(promoted),
         "strategy_weights": len(strat_weights),
         "institutional_strategies": len(inst_weights),
+        "meta_model_trained": meta.trained,
+        "meta_model_rows": meta.n_rows,
+        "meta_model_accuracy": meta.train_accuracy,
         "rl_seed": {"institutional": rl_inst, "strategy": rl_strat},
         "disabled_strategies": len(disabled),
         "lifecycle_transitions": len([x for x in lifecycle if x.get("changed")]),
