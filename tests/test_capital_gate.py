@@ -38,8 +38,12 @@ def test_capital_gate_not_sticky(db, monkeypatch):
     monkeypatch.setenv("CAPITAL_MIN_COMPOSITE", "0")
     monkeypatch.setenv("CAPITAL_MIN_PROMOTED_FULL", "0")
     ts = int(time.time())
-    for i in range(3):
-        db.record_trade(ts + i, "INFY", "SELL", 1, 100.0 + i, 100.0 + i, "test", 0.0, "NA")
+    # distinct symbols — this test is about re-evaluation not being sticky, not
+    # about the effective-N correlation correction (see test_fitness_evidence.py
+    # for that); 3 trades clustered on one symbol would correctly fail the
+    # effective-N check and defeat the purpose of this test.
+    for i, sym in enumerate(["INFY", "TCS", "WIPRO"]):
+        db.record_trade(ts + i, sym, "SELL", 1, 100.0 + i, 100.0 + i, "test", 0.0, "NA")
     gate = evaluate_capital_gate(db)
     assert gate["checks"]["closed_trades"]["pass"]
 

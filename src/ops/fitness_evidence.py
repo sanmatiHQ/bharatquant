@@ -1,6 +1,7 @@
 """After-cost fitness evidence from closed trades and portfolio history — capital gate inputs."""
 from __future__ import annotations
 
+import math
 import os
 import time
 from typing import Any
@@ -46,8 +47,10 @@ def clock_start_ts(db: DB) -> int:
     return ensure_capital_clock(db)
 
 
-def closed_sell_returns(db: DB, since_ts: int) -> list[float]:
-    """Fractional return per closed SELL (after fees), using FIFO cost basis reconstruction."""
+def closed_sell_returns_with_symbol(db: DB, since_ts: int) -> list[tuple[str, float]]:
+    """Fractional return per closed SELL (after fees), using FIFO cost basis
+    reconstruction — tagged with symbol so callers can correct for clustering
+    (many trades on the same symbol are not independent evidence)."""
     rows = db._conn.execute(
         """
         SELECT ts, symbol, qty, price, amount, fees
@@ -57,7 +60,7 @@ def closed_sell_returns(db: DB, since_ts: int) -> list[float]:
         """,
         (since_ts,),
     ).fetchall()
-    returns: list[float] = []
+    out: list[tuple[str, float]] = []
     for r in rows:
         qty = int(r["qty"] or 0)
         if qty <= 0:
@@ -81,8 +84,32 @@ def closed_sell_returns(db: DB, since_ts: int) -> list[float]:
             cost_basis = max(proceeds, sell_px * qty)
         net = proceeds - fees if proceeds > 0 else sell_px * qty - fees
         ret = (net - cost_basis) / cost_basis
-        returns.append(ret)
-    return returns
+        out.append((sym, ret))
+    return out
+
+
+def closed_sell_returns(db: DB, since_ts: int) -> list[float]:
+    """Fractional return per closed SELL (after fees), using FIFO cost basis reconstruction."""
+    return [ret for _sym, ret in closed_sell_returns_with_symbol(db, since_ts)]
+
+
+def effective_sample_size(symbol_returns: list[tuple[str, float]]) -> float:
+    """
+    Discount raw trade count for symbol clustering — trades on the same symbol
+    are not independent evidence (a community forward-tester's lesson: "n=1,235
+    is really n=a-lot-less" once correlated instruments are accounted for).
+
+    Standard cluster-robust heuristic: under perfect within-cluster correlation,
+    effective sample size scales as sqrt(cluster size), not cluster size — e.g.
+    10 trades all on the same symbol contribute ~3.16 effective samples, not 10.
+    Symbols with only one or two trades are barely discounted at all.
+    """
+    if not symbol_returns:
+        return 0.0
+    counts: dict[str, int] = {}
+    for sym, _ret in symbol_returns:
+        counts[sym] = counts.get(sym, 0) + 1
+    return sum(math.sqrt(c) for c in counts.values())
 
 
 def portfolio_period_returns(db: DB, since_ts: int) -> list[float]:
@@ -160,13 +187,15 @@ def max_observed_drawdown_pct(db: DB, since_ts: int) -> float:
 
 def system_fitness_snapshot(db: DB, since_ts: int | None = None) -> dict[str, Any]:
     start = since_ts or clock_start_ts(db)
-    sell_rets = closed_sell_returns(db, start)
+    sym_rets = closed_sell_returns_with_symbol(db, start)
+    sell_rets = [ret for _sym, ret in sym_rets]
     port_rets = portfolio_period_returns(db, start)
     series = sell_rets if len(sell_rets) >= 10 else port_rets
     fit = fitness_from_returns(series, periods_per_year=PERIODS_PER_YEAR_SIGNAL) if series else fitness_from_returns([], periods_per_year=PERIODS_PER_YEAR_SIGNAL)
     return {
         "clock_start_ts": start,
         "closed_sells": len(sell_rets),
+        "effective_closed_trades": round(effective_sample_size(sym_rets), 1),
         "portfolio_points": len(port_rets),
         "sample_n": fit.n,
         "sortino": round(fit.sortino, 4),

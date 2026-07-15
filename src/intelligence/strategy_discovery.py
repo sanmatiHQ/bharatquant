@@ -92,15 +92,18 @@ def _forward_return(closes: list[float], idx: int, horizon: int = 3) -> float | 
     return (c1 - c0) / c0
 
 
-def forward_returns_for_discovery_rule(
+def forward_returns_with_ts_for_discovery_rule(
     db: DB,
     symbol: str,
     rule: dict[str, Any],
     *,
     lookback_days: int = 14,
     min_samples: int = 20,
-) -> list[float]:
-    """Recompute actual per-hit forward returns for one mined rule (not repeated means)."""
+) -> list[tuple[int, float]]:
+    """Recompute actual per-hit forward returns for one mined rule (not repeated
+    means), tagged with the bar timestamp each hit occurred at — needed for the
+    gauntlet's best-day-removed check (which needs to know which trades share a
+    calendar day, not just their return magnitude)."""
     cutoff = int(time.time()) - lookback_days * 86400
     rows = db._conn.execute(
         """
@@ -121,7 +124,7 @@ def forward_returns_for_discovery_rule(
     field = str(rule.get("field", ""))
     op = str(rule.get("op", "gt"))
     th = float(rule.get("threshold", 0))
-    returns: list[float] = []
+    returns: list[tuple[int, float]] = []
     for i in range(20, len(bars) - 4):
         feats = _bar_features_at(bars, closes, highs, lows, vols, vol_avg, i)
         val = feats.get(field, 0)
@@ -131,8 +134,24 @@ def forward_returns_for_discovery_rule(
         fr = _forward_return(closes, i, 3)
         if fr is None:
             continue
-        returns.append(fr)
+        returns.append((int(bars[i]["ts"]), fr))
     return returns if len(returns) >= min_samples else []
+
+
+def forward_returns_for_discovery_rule(
+    db: DB,
+    symbol: str,
+    rule: dict[str, Any],
+    *,
+    lookback_days: int = 14,
+    min_samples: int = 20,
+) -> list[float]:
+    """Plain-float variant of forward_returns_with_ts_for_discovery_rule for
+    callers that don't need per-hit timestamps."""
+    ts_returns = forward_returns_with_ts_for_discovery_rule(
+        db, symbol, rule, lookback_days=lookback_days, min_samples=min_samples
+    )
+    return [ret for _ts, ret in ts_returns]
 
 
 def mine_bar_log(db: DB, lookback_days: int = 14, min_samples: int = 20) -> list[dict[str, Any]]:

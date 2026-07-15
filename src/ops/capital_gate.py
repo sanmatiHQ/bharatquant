@@ -47,9 +47,14 @@ def evaluate_capital_gate(db: DB) -> dict[str, Any]:
             "pass": snap["trading_weeks"] >= _min_weeks(),
         },
         "closed_trades": {
-            "value": snap["closed_sells"],
+            # Effective-N, not raw count — trades clustered on the same symbol
+            # are not independent evidence ("n=1,235 is really n=a-lot-less"
+            # once correlated instruments are accounted for). raw_value is kept
+            # for transparency; the gate itself is decided on effective_value.
+            "value": snap["effective_closed_trades"],
+            "raw_value": snap["closed_sells"],
             "required": _min_closed_trades(),
-            "pass": snap["closed_sells"] >= _min_closed_trades(),
+            "pass": snap["effective_closed_trades"] >= _min_closed_trades(),
         },
         "composite_fitness": {
             "value": snap["composite"],
@@ -73,8 +78,9 @@ def evaluate_capital_gate(db: DB) -> dict[str, Any]:
         snap = system_fitness_snapshot(db, clock_start_ts(db))
         checks["trading_weeks"]["value"] = snap["trading_weeks"]
         checks["trading_weeks"]["pass"] = snap["trading_weeks"] >= _min_weeks()
-        checks["closed_trades"]["value"] = snap["closed_sells"]
-        checks["closed_trades"]["pass"] = snap["closed_sells"] >= _min_closed_trades()
+        checks["closed_trades"]["value"] = snap["effective_closed_trades"]
+        checks["closed_trades"]["raw_value"] = snap["closed_sells"]
+        checks["closed_trades"]["pass"] = snap["effective_closed_trades"] >= _min_closed_trades()
 
     all_pass = all(c["pass"] for c in checks.values())
     result = {

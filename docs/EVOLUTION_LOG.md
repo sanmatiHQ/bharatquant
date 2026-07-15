@@ -1039,3 +1039,35 @@ Swapped fitness function from raw/cumulative PnL to **risk-adjusted, after-cost 
 - VM owns Kite token; laptop token never overwrites production OAuth
 
 ---
+
+## 2026-07-14 — Design note: multi-leg spread executor MUST trail on net P&L
+
+**Not built yet** — `portfolio_greeks.py` is scaffolding only, no spread executor
+exists, zero F&O strategies have left candidacy. Writing this down now so the
+requirement isn't lost/rediscovered the hard way once that infra gets built.
+
+**The bug to design around, reported independently by another builder running a
+live NSE options maker-checker bot (bull call spreads):** their trailing stop-loss
+fired on individual legs, closing profitable spreads prematurely — "today all 4
+spreads closed prematurely by TSL" even though the spread as a whole was
+profitable. Individual-leg TSL doesn't know about the paired leg's offsetting
+P&L.
+
+**Hard requirement for the eventual spread executor:**
+- Trailing stop must be computed on **net spread P&L** (long leg + short leg
+  combined), never on either leg's price in isolation.
+- Closing one leg of a spread must **cascade-close the paired leg** in the same
+  action — no naked legs left open after a partial close (the same builder
+  already got this part right: "closing one spread leg auto-closes the paired
+  leg — no naked shorts").
+- This applies to every multi-leg structure this system eventually builds
+  (bull/bear spreads, iron condors, calendar spreads) — the risk engine's stop
+  logic needs a "position" abstraction that can represent N legs as one unit
+  with one net P&L, not just single-instrument positions.
+
+**Enforcement**: no options-spread strategy may leave `candidacy` in
+`strategy_lifecycle.py` until this is built and covered by tests proving a
+profitable net spread survives an individual-leg drawdown that would have
+tripped a naive per-leg trailing stop.
+
+---

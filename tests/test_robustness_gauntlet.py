@@ -9,6 +9,7 @@ import pytest
 from src.backtest.robustness_gauntlet import (
     doubled_cost_returns,
     jittered_thresholds,
+    remove_best_day_returns,
     run_gauntlet,
     trimmed_best_returns,
 )
@@ -72,6 +73,54 @@ def test_thin_edge_fails_doubled_cost_stress():
     result = run_gauntlet(tiny, tiny, tiny, price_hint=1000.0, qty_hint=1)
     assert not result.passed
     assert "fails_doubled_cost_stress" in result.reasons
+
+
+def test_remove_best_day_drops_every_trade_on_the_best_day():
+    day0 = 20_000  # arbitrary "day number" once divided by 86400
+    ts_a = day0 * 86400 + 100
+    ts_b = day0 * 86400 + 500   # same day as ts_a
+    ts_c = (day0 + 1) * 86400 + 100  # different day
+    ts_returns = [(ts_a, 0.03), (ts_b, 0.025), (ts_c, -0.005)]
+    out = remove_best_day_returns(ts_returns)
+    # day0's two trades (which sum to the largest daily total) must both be gone
+    assert out == [-0.005]
+
+
+def test_remove_best_day_catches_edge_spread_across_several_ok_trades():
+    """The single-best-trade check can miss this: no individual trade is a wild
+    outlier, but they all cluster on one lucky day and together prop up the
+    whole edge."""
+    day0 = 20_000
+    lucky_day = [(day0 * 86400 + i * 100, 0.02) for i in range(5)]  # 5 solid but unremarkable wins
+    other_days = [((day0 + d) * 86400 + 100, -0.01) for d in range(1, 15)]  # 14 losing days elsewhere
+    ts_returns = lucky_day + other_days
+
+    # single-best-trade check: none of the 0.02 returns look like an outlier
+    base_returns = [r for _ts, r in ts_returns]
+    trimmed = trimmed_best_returns(base_returns, drop_frac=0.05)
+    trimmed_fit_mean = sum(trimmed) / len(trimmed)
+    assert trimmed_fit_mean < 0, "best-trade-removed check alone should still look unprofitable here (it's not the point of this test)"
+
+    result = run_gauntlet(base_returns, base_returns, base_returns, price_hint=1000.0, qty_hint=5, base_returns_with_ts=ts_returns)
+    assert not result.passed
+    assert "edge_depends_on_best_day" in result.reasons
+
+
+def test_remove_best_day_returns_none_when_all_trades_share_one_day():
+    """Removing 'the best day' when there's only one day would remove every
+    trade — that tests data coverage, not edge robustness. Must skip, not fail."""
+    day0 = 20_000
+    ts_returns = [(day0 * 86400 + i * 100, 0.01) for i in range(10)]
+    assert remove_best_day_returns(ts_returns) is None
+
+
+def test_gauntlet_skips_best_day_check_gracefully_without_timestamps():
+    """Backward compatible — omitting base_returns_with_ts must not break
+    existing callers or count as a failure."""
+    base = [0.05, 0.04, -0.02, 0.045, 0.035, -0.015, 0.052, 0.038, -0.022, 0.042] * 3
+    result = run_gauntlet(base, base, base, price_hint=1000.0, qty_hint=5)
+    assert result.best_day_removed_sortino is None
+    assert "edge_depends_on_best_day" not in result.reasons
 
 
 def test_outlier_dependent_edge_fails_trimmed_check():

@@ -201,6 +201,7 @@ def promote_discovery_rules(db: DB, *, min_win_rate: float = 0.54, limit: int = 
         # This is the single highest overfitting-risk source in the system
         # (auto-mined from raw price history), so it gets the strictest check.
         from ..backtest.robustness_gauntlet import jittered_thresholds, run_gauntlet
+        from .strategy_discovery import forward_returns_with_ts_for_discovery_rule
 
         th_check = float(rule.get("threshold", 0))
         lo_th, hi_th = jittered_thresholds(th_check)
@@ -208,6 +209,10 @@ def promote_discovery_rules(db: DB, *, min_win_rate: float = 0.54, limit: int = 
         rule_hi = {**rule, "threshold": hi_th}
         returns_lo = forward_returns_for_discovery_rule(db, str(r["symbol"] or ""), rule_lo)
         returns_hi = forward_returns_for_discovery_rule(db, str(r["symbol"] or ""), rule_hi)
+        # Timestamped for the best-day-removed check (falls back gracefully to
+        # skipping that one check if this comes back empty — e.g. when `returns`
+        # came from load_discovery_returns() rather than a fresh bar_log scan).
+        base_ts_returns = forward_returns_with_ts_for_discovery_rule(db, str(r["symbol"] or ""), rule)
         # Use the system's actual configured trade-size ceiling for the cost
         # stress test, not an arbitrary small turnover — Zerodha's flat ~Rs20
         # minimum commission structurally dominates tiny turnovers and would
@@ -218,6 +223,7 @@ def promote_discovery_rules(db: DB, *, min_win_rate: float = 0.54, limit: int = 
             returns, returns_lo, returns_hi,
             price_hint=gauntlet_price_hint,
             qty_hint=max(1, int(gauntlet_turnover / gauntlet_price_hint)),
+            base_returns_with_ts=base_ts_returns,
         )
         if not gauntlet.passed:
             logger.info(

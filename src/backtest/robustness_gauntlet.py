@@ -40,6 +40,7 @@ class GauntletResult:
     jitter_up_sortino: float
     doubled_cost_sortino: float
     trimmed_best_sortino: float
+    best_day_removed_sortino: float | None = None
 
 
 def doubled_cost_returns(returns: list[float], *, price_hint: float = 100.0, qty_hint: int = 1) -> list[float]:
@@ -61,6 +62,30 @@ def trimmed_best_returns(returns: list[float], drop_frac: float = 0.05) -> list[
     return [r for i, r in enumerate(returns) if i not in drop_idx]
 
 
+def remove_best_day_returns(ts_returns: list[tuple[int, float]]) -> list[float] | None:
+    """
+    Drop every trade that occurred on the single best calendar day (by summed
+    return that day), not just the single best trade. A rule whose entire edge
+    comes from one lucky session isn't a repeatable edge either — the single-
+    trade check above can miss this when the best day's return is spread across
+    several merely-good trades that individually look unremarkable.
+
+    Returns None (meaning "not evaluable, don't fail this check") if all trades
+    fall on a single calendar day — removing "the best day" would then remove
+    every trade, which tests data coverage, not edge robustness.
+    """
+    if not ts_returns:
+        return []
+    day_totals: dict[int, float] = {}
+    for ts, ret in ts_returns:
+        day = ts // 86400
+        day_totals[day] = day_totals.get(day, 0.0) + ret
+    if len(day_totals) < 2:
+        return None
+    best_day = max(day_totals, key=lambda d: day_totals[d])
+    return [ret for ts, ret in ts_returns if (ts // 86400) != best_day]
+
+
 def jittered_returns_fn_signature() -> None:
     """No-op placeholder documenting that jitter is applied at the caller level
     (re-running forward_returns_for_discovery_rule at threshold*(1+/-pct)) since
@@ -76,12 +101,20 @@ def run_gauntlet(
     price_hint: float = 100.0,
     qty_hint: int = 1,
     min_sortino: float | None = None,
+    base_returns_with_ts: list[tuple[int, float]] | None = None,
 ) -> GauntletResult:
     """
-    All three inputs are pre-computed forward-return series:
+    All three positional inputs are pre-computed forward-return series:
     - base_returns: at the rule's original threshold
     - jitter_down_returns / jitter_up_returns: at threshold*(1-pct) / threshold*(1+pct)
     Doubled-cost and best-trades-removed checks are derived from base_returns here.
+
+    base_returns_with_ts is optional (ts, return) pairs for the best-day-removed
+    check — a rule whose entire edge comes from one lucky session, spread across
+    several individually-unremarkable trades, can pass the single-best-trade
+    check while still not being a repeatable edge. Skipped gracefully (not a
+    failure) when timestamps aren't available, same cold-start discipline used
+    throughout this codebase.
     """
     floor = min_sortino if min_sortino is not None else _MIN_SORTINO
     reasons: list[str] = []
@@ -94,6 +127,12 @@ def run_gauntlet(
     trimmed = trimmed_best_returns(base_returns)
     trimmed_fit = fitness_from_returns(trimmed, periods_per_year=252)
 
+    best_day_fit = None
+    if base_returns_with_ts:
+        day_trimmed = remove_best_day_returns(base_returns_with_ts)
+        if day_trimmed is not None:
+            best_day_fit = fitness_from_returns(day_trimmed, periods_per_year=252)
+
     if base_fit.sortino <= floor:
         reasons.append("base_sortino_below_floor")
     if down_fit is None or down_fit.sortino <= floor:
@@ -104,6 +143,8 @@ def run_gauntlet(
         reasons.append("fails_doubled_cost_stress")
     if trimmed_fit.sortino <= floor:
         reasons.append("edge_depends_on_best_trades")
+    if best_day_fit is not None and best_day_fit.sortino <= floor:
+        reasons.append("edge_depends_on_best_day")
 
     return GauntletResult(
         passed=len(reasons) == 0,
@@ -113,6 +154,7 @@ def run_gauntlet(
         jitter_up_sortino=up_fit.sortino if up_fit else 0.0,
         doubled_cost_sortino=doubled_fit.sortino,
         trimmed_best_sortino=trimmed_fit.sortino,
+        best_day_removed_sortino=best_day_fit.sortino if best_day_fit is not None else None,
     )
 
 
