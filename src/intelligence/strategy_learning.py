@@ -195,6 +195,37 @@ def promote_discovery_rules(db: DB, *, min_win_rate: float = 0.54, limit: int = 
         fit = fitness_from_returns(returns, periods_per_year=ppy)
         if fit.composite <= 0 or fit.sortino < float(os.getenv("LIFECYCLE_MIN_SORTINO", "0.15")):
             continue
+
+        # Robustness gauntlet — assume this discovered rule is overfit until it
+        # survives a parameter nudge, doubled costs, and its best trades removed.
+        # This is the single highest overfitting-risk source in the system
+        # (auto-mined from raw price history), so it gets the strictest check.
+        from ..backtest.robustness_gauntlet import jittered_thresholds, run_gauntlet
+
+        th_check = float(rule.get("threshold", 0))
+        lo_th, hi_th = jittered_thresholds(th_check)
+        rule_lo = {**rule, "threshold": lo_th}
+        rule_hi = {**rule, "threshold": hi_th}
+        returns_lo = forward_returns_for_discovery_rule(db, str(r["symbol"] or ""), rule_lo)
+        returns_hi = forward_returns_for_discovery_rule(db, str(r["symbol"] or ""), rule_hi)
+        # Use the system's actual configured trade-size ceiling for the cost
+        # stress test, not an arbitrary small turnover — Zerodha's flat ~Rs20
+        # minimum commission structurally dominates tiny turnovers and would
+        # fail almost any rule regardless of real edge quality.
+        gauntlet_turnover = float(os.getenv("MAX_RUPEES_PER_TRADE", "2000"))
+        gauntlet_price_hint = 100.0
+        gauntlet = run_gauntlet(
+            returns, returns_lo, returns_hi,
+            price_hint=gauntlet_price_hint,
+            qty_hint=max(1, int(gauntlet_turnover / gauntlet_price_hint)),
+        )
+        if not gauntlet.passed:
+            logger.info(
+                "discovery_rule_failed_gauntlet",
+                extra={"rule_id": r["rule_id"], "reasons": gauntlet.reasons},
+            )
+            continue
+
         if len(promoted_specs) >= limit:
             break
         field = str(rule.get("field", ""))
