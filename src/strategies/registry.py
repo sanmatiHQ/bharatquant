@@ -64,6 +64,7 @@ from .candidacy_signals import (
     RegulatoryCatalystStrategy,
     RetailContrarianFadeStrategy,
     SipFlowSeasonalityStrategy,
+    UserSuggestionStrategy,
 )
 from .calendar_activity import CalendarActivityStrategy
 from .sentiment_regime import SentimentRegimeStrategy
@@ -146,6 +147,7 @@ _BUILTIN: dict[str, Type[Strategy]] = {
     "proximity_52w_high": Proximity52WHighStrategy,
     "low_vol_anomaly": LowVolatilityAnomalyStrategy,
     "delivery_conviction": DeliveryConvictionStrategy,
+    "user_suggested": UserSuggestionStrategy,
 }
 
 
@@ -176,6 +178,7 @@ class StrategyRegistry:
                 "proximity_52w_high",
                 "low_vol_anomaly",
                 "delivery_conviction",
+                "user_suggested",
             ):
                 self._strategies.append(cls(db=db))
             else:

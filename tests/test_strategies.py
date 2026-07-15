@@ -49,7 +49,7 @@ async def test_stop_loss_guard():
 def test_registry_loads_all():
     reg = StrategyRegistry()
     assert len(reg._strategies) == strategy_count()
-    assert strategy_count() == 65
+    assert strategy_count() == 66
 
 
 @pytest.mark.asyncio

@@ -460,3 +460,16 @@ CREATE TABLE IF NOT EXISTS slippage_parity (
 );
 
 CREATE INDEX IF NOT EXISTS idx_slippage_parity_ts ON slippage_parity(ts DESC);
+
+CREATE TABLE IF NOT EXISTS user_suggestions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL,
+  thesis TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  reject_reason TEXT DEFAULT '',
+  resolved_ts INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_suggestions_status ON user_suggestions(status, ts DESC);

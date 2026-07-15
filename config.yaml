@@ -102,6 +102,7 @@ strategies:
     - proximity_52w_high
     - low_vol_anomaly
     - delivery_conviction
+    - user_suggested
 
 rl:
   active_version: "ppo_v1"

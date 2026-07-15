@@ -165,3 +165,106 @@ def execute_manual_paper_buy(db: DB, symbol: str, qty: int | None = None, reason
     open_lot(db, sym, qty, exec_px, ts, "CNC", tid)
     persist_decision(db, {"action": "MANUAL_BUY", "symbol": sym, "qty": qty, "price": exec_px, "reason": reason})
     return {"ok": True, "symbol": sym, "qty": qty, "price": exec_px, "fees": fees, "order_id": order_id}
+
+
+# --- Dashboard "suggest to agent" queue ---
+# Deliberately NOT a direct-execution path like manual_buy() above. A suggestion only
+# creates a candidate signal (via UserSuggestionStrategy) that goes through the exact
+# same fuse/risk_veto/cost_edge/lifecycle gates as any other strategy — it can be
+# outscored, vetoed, or rejected exactly like a machine-generated signal. That's the
+# point: a human idea doesn't get a backdoor around the gates a strategy has to earn.
+
+
+def create_suggestion(db: DB, symbol: str, side: str, thesis: str = "") -> dict[str, Any]:
+    sym = symbol.upper().replace("NSE:", "")
+    side_u = side.upper()
+    if side_u not in ("BUY", "SELL"):
+        return {"ok": False, "error": "invalid_side"}
+    ts = int(time.time())
+    with db.tx() as conn:
+        cur = conn.execute(
+            "INSERT INTO user_suggestions(ts, symbol, side, thesis, status) VALUES (?,?,?,?,'pending')",
+            (ts, sym, side_u, thesis[:500]),
+        )
+        sid = int(cur.lastrowid)
+    return {"ok": True, "id": sid, "symbol": sym, "side": side_u, "status": "pending"}
+
+
+def list_suggestions(db: DB, limit: int = 20) -> list[dict[str, Any]]:
+    rows = db._conn.execute(
+        """
+        SELECT id, ts, symbol, side, thesis, status, reject_reason, resolved_ts
+        FROM user_suggestions ORDER BY ts DESC LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def next_pending_suggestion(db: DB, symbol: str) -> dict[str, Any] | None:
+    row = db._conn.execute(
+        """
+        SELECT id, ts, symbol, side, thesis FROM user_suggestions
+        WHERE symbol=? AND status='pending' ORDER BY ts ASC LIMIT 1
+        """,
+        (symbol,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_suggestion_evaluating(db: DB, suggestion_id: int) -> None:
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE user_suggestions SET status='evaluating' WHERE id=? AND status='pending'",
+            (suggestion_id,),
+        )
+
+
+def resolve_evaluating_suggestions(db: DB, stale_after_sec: int = 900) -> int:
+    """Reconcile 'evaluating' suggestions against real outcomes — executed, rejected
+    (with the real gate reason), or expired if no bar closed for the symbol in time."""
+    now = int(time.time())
+    rows = db._conn.execute(
+        "SELECT id, ts, symbol, side FROM user_suggestions WHERE status='evaluating'"
+    ).fetchall()
+    n = 0
+    for r in rows:
+        sid, ts, sym, side = int(r["id"]), int(r["ts"]), str(r["symbol"]), str(r["side"])
+        executed = db._conn.execute(
+            """
+            SELECT 1 FROM trades WHERE symbol=? AND side=? AND ts>=? AND reason LIKE '%user_suggested%'
+            LIMIT 1
+            """,
+            (sym, side, ts),
+        ).fetchone()
+        if executed:
+            with db.tx() as conn:
+                conn.execute(
+                    "UPDATE user_suggestions SET status='executed', resolved_ts=? WHERE id=?",
+                    (now, sid),
+                )
+            n += 1
+            continue
+        rejected = db._conn.execute(
+            """
+            SELECT reason FROM shadow_trades
+            WHERE strategy_id='user_suggested' AND symbol=? AND ts>=? ORDER BY ts DESC LIMIT 1
+            """,
+            (sym, ts),
+        ).fetchone()
+        if rejected:
+            with db.tx() as conn:
+                conn.execute(
+                    "UPDATE user_suggestions SET status='rejected', reject_reason=?, resolved_ts=? WHERE id=?",
+                    (str(rejected["reason"] or "outscored_by_other_signal"), now, sid),
+                )
+            n += 1
+            continue
+        if now - ts > stale_after_sec:
+            with db.tx() as conn:
+                conn.execute(
+                    "UPDATE user_suggestions SET status='expired_no_signal_window', resolved_ts=? WHERE id=?",
+                    (now, sid),
+                )
+            n += 1
+    return n

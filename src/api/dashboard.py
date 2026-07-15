@@ -22,6 +22,12 @@ class HaltBody(BaseModel):
     reason: str = "manual"
 
 
+class SuggestBody(BaseModel):
+    symbol: str
+    side: str = "BUY"
+    thesis: str = ""
+
+
 class ManualBuyBody(BaseModel):
     symbol: str
     qty: int | None = None
@@ -321,6 +327,101 @@ def create_app() -> FastAPI:
     def positions():
         cur = db._conn.execute("SELECT symbol, qty, avg_price, last_price, open_ts FROM positions")
         return [dict(r) for r in cur.fetchall()]
+
+    @app.get("/api/indices")
+    def indices():
+        from ..ingest.index_data import INDEX_MAP
+
+        out = []
+        for key, meta in INDEX_MAP.items():
+            sym = meta["db_symbol"]
+            latest = db._conn.execute(
+                "SELECT ltp, ts FROM tick_log WHERE symbol=? ORDER BY ts DESC LIMIT 1", (sym,)
+            ).fetchone()
+            if not latest:
+                out.append({"key": key, "label": meta["label"], "exchange": meta.get("exchange", "NSE"), "ltp": None, "stale": True})
+                continue
+            day_start = int(latest["ts"]) - (int(latest["ts"]) % 86400)
+            day_open_row = db._conn.execute(
+                "SELECT ltp FROM tick_log WHERE symbol=? AND ts>=? ORDER BY ts ASC LIMIT 1",
+                (sym, day_start),
+            ).fetchone()
+            ltp = float(latest["ltp"])
+            day_open = float(day_open_row["ltp"]) if day_open_row else ltp
+            chg_abs = ltp - day_open
+            chg_pct = (chg_abs / day_open * 100.0) if day_open else 0.0
+            out.append({
+                "key": key,
+                "label": meta["label"],
+                "exchange": meta.get("exchange", "NSE"),
+                "ltp": ltp,
+                "chg_abs": round(chg_abs, 2),
+                "chg_pct": round(chg_pct, 2),
+                "ts": int(latest["ts"]),
+                "stale": (int(time.time()) - int(latest["ts"])) > 900,
+            })
+        return out
+
+    @app.get("/api/search/{symbol}")
+    def search_symbol(symbol: str):
+        from ..ops.manual_trade import lookup_symbol
+
+        return lookup_symbol(db, symbol)
+
+    @app.post("/api/manual_trade/suggest")
+    def suggest_trade(body: SuggestBody, request: Request):
+        require_admin(request)
+        from ..ops.manual_trade import create_suggestion
+
+        return create_suggestion(db, body.symbol, body.side, body.thesis)
+
+    @app.get("/api/manual_trade/queue")
+    def suggestion_queue(request: Request):
+        require_admin(request)
+        from ..ops.manual_trade import list_suggestions, resolve_evaluating_suggestions
+
+        resolve_evaluating_suggestions(db)
+        return list_suggestions(db)
+
+    @app.get("/api/kite/status")
+    def kite_status():
+        from ..ops.healthchecks import check_token_fast
+
+        token_path = os.getenv("KITE_ACCESS_TOKEN_FILE", ".kite_token.json")
+        valid = check_token_fast()
+        refreshed_at = None
+        next_expiry_ist = None
+        if os.path.exists(token_path):
+            mtime = os.path.getmtime(token_path)
+            refreshed_at = int(mtime)
+            from datetime import datetime, timedelta
+            from zoneinfo import ZoneInfo
+
+            ist = ZoneInfo("Asia/Kolkata")
+            refreshed_dt = datetime.fromtimestamp(mtime, tz=ist)
+            expiry_dt = refreshed_dt.replace(hour=7, minute=30, second=0, microsecond=0)
+            if expiry_dt <= refreshed_dt:
+                expiry_dt += timedelta(days=1)
+            next_expiry_ist = expiry_dt.isoformat()
+        return {
+            "valid": valid,
+            "refreshed_at": refreshed_at,
+            "next_expiry_ist": next_expiry_ist,
+            "totp_configured": bool(os.getenv("KITE_TOTP_SECRET")),
+        }
+
+    @app.post("/api/kite/reauth")
+    async def kite_reauth(request: Request):
+        require_admin(request)
+        import asyncio
+        import sys
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "src.auth.kite_auth", "--auto",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        return {"ok": True, "triggered": True, "pid": proc.pid}
 
     @app.get("/api/daily_tax_summary")
     def daily_tax_summary():

@@ -41,6 +41,21 @@ INDEX_MAP: dict[str, dict[str, str]] = {
         "db_symbol": "NIFTY500",
         "yf": "^CRSLDX",
     },
+    "banknifty": {
+        "nse_name": "NIFTY BANK",
+        "label": "Nifty Bank",
+        "kite": "NSE:NIFTY BANK",
+        "db_symbol": "NIFTYBANK",
+        "yf": "^NSEBANK",
+    },
+    "sensex": {
+        "nse_name": "SENSEX",
+        "label": "Sensex",
+        "kite": "BSE:SENSEX",
+        "db_symbol": "SENSEX",
+        "yf": "^BSESN",
+        "exchange": "BSE",
+    },
 }
 
 _PERIOD_MAP = {

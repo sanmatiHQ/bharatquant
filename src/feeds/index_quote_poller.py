@@ -40,7 +40,7 @@ async def poll_index_quotes_loop(db) -> None:
             from ..data.kite_data_feed import KiteDataFeed
 
             feed = KiteDataFeed()
-            keys = ("nifty50", "nifty100")
+            keys = ("nifty50", "nifty100", "banknifty", "sensex")
             symbols = [INDEX_MAP[k]["kite"] for k in keys if k in INDEX_MAP]
             if not symbols:
                 continue

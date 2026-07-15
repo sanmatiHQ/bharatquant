@@ -290,3 +290,32 @@ class DeliveryConvictionStrategy:
         chg = (last - prev) / prev
         confidence = min(0.7, 0.55 + (dp - 65.0) / 100.0 + min(0.05, chg))
         return Signal(self.id, sym, "BUY", "CNC", round(confidence, 3), f"delivery_conviction_{dp:.0f}pct")
+
+
+class UserSuggestionStrategy:
+    """Turns a dashboard-submitted symbol suggestion into a real candidate signal —
+    NOT a direct order path. It competes in fuse() like any other strategy and is
+    subject to the same risk/budget/cost-edge/lifecycle gates; it can lose, be
+    vetoed, or be outscored exactly like a machine-generated signal."""
+
+    id = "user_suggested"
+    listens_to = {EventType.BAR_CLOSE_5M}
+
+    def __init__(self, db=None) -> None:
+        self.db = db
+
+    async def on_event(self, event: MarketEvent, ctx: MarketContext) -> Optional[Signal]:
+        if not self.db:
+            return None
+        sym = _sym(event)
+        if not sym:
+            return None
+        from ..ops.manual_trade import mark_suggestion_evaluating, next_pending_suggestion
+
+        pending = next_pending_suggestion(self.db, sym)
+        if not pending:
+            return None
+        mark_suggestion_evaluating(self.db, int(pending["id"]))
+        thesis = str(pending.get("thesis") or "").strip()
+        reason = f"user_suggested:{thesis[:80]}" if thesis else "user_suggested"
+        return Signal(self.id, sym, str(pending["side"]), "CNC", 0.55, reason)
