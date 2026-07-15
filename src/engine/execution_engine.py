@@ -505,6 +505,26 @@ class ExecutionEngine:
         cost_basis = 0.0
         if chosen.action == "BUY":
             async with self._deploy_lock:
+                # Authoritative budget re-check — must happen inside the lock, atomic with
+                # the record_trade write below. The pre-lock can_deploy() above is only a
+                # cheap early-reject hint; without this re-check, concurrent handlers can
+                # both pass the pre-lock check before either has recorded a trade (TOCTOU),
+                # overspending the daily cap.
+                fees_est = self.costs.compute_trade_costs(chosen.symbol, qty, ltp, "BUY")
+                total_cost_est = ltp * qty + fees_est
+                ok_budget2, budget_reason2 = can_deploy(self.db, total_cost_est)
+                if not ok_budget2:
+                    logger.info("budget_veto_in_lock", extra={"reason": budget_reason2, "est": total_cost_est})
+                    self._record_signal(chosen, event, False)
+                    self._rl.record_skip(self.router.ctx, chosen, reason=budget_reason2)
+                    persist_decision(self.db, {
+                        "action": "VETO",
+                        "strategy": chosen.strategy_id,
+                        "symbol": chosen.symbol,
+                        "signal": chosen.action,
+                        "reason": budget_reason2,
+                    })
+                    return
                 cash = float(port.get("cash", 0))
                 ok_m, m_reason = check_margin(
                     symbol=sym,

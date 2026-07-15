@@ -1,6 +1,7 @@
 """Budget gate — 15m approval timeout."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -92,3 +93,82 @@ def test_strict_no_rollover(db):
     r = rollover_at_session_close(db)
     assert r["mode"] == "strict"
     assert effective_daily_max(db) == 2000.0
+
+
+# --- TOCTOU race reproduction: two concurrent handlers, one ₹2000 cap ---
+# Reproduces the 178% overspend seen in production (deployed_today_inr=3568 vs
+# a ~2000-2407 cap): two near-simultaneous BUYs each call can_deploy() while
+# deployed_today_inr() is still 0, both see the full cap as "remaining", both
+# pass, both record_trade — total deployed exceeds the cap.
+
+
+async def _unguarded_deploy(db, ts, symbol, amount):
+    """Old pattern: check, then (after a yield simulating I/O) record — no shared lock."""
+    ok, _ = can_deploy(db, amount)
+    if not ok:
+        return False
+    await asyncio.sleep(0)  # yield control, exactly where the race window sits
+    db.record_trade(ts, symbol, "BUY", 1, amount, amount, "test", 0.0, "NA")
+    return True
+
+
+async def _guarded_deploy(db, lock, ts, symbol, amount):
+    """Fixed pattern: check + record serialized under one lock, re-checked inside it."""
+    async with lock:
+        ok, _ = can_deploy(db, amount)
+        if not ok:
+            return False
+        await asyncio.sleep(0)
+        db.record_trade(ts, symbol, "BUY", 1, amount, amount, "test", 0.0, "NA")
+        return True
+
+
+def test_unguarded_concurrent_deploys_overspend_cap(db):
+    """RED: demonstrates the bug — reproduces it on the old (unguarded) pattern."""
+    os.environ["BUDGET_ROLLOVER_MODE"] = "strict"
+    os.environ["DAILY_INVESTMENT_MAX"] = "2000"
+    ts = int(time.time())
+
+    async def run():
+        results = await asyncio.gather(
+            _unguarded_deploy(db, ts, "PPAP", 1770.0),
+            _unguarded_deploy(db, ts, "PPAP", 1770.0),
+        )
+        return results
+
+    results = asyncio.run(run())
+    assert results == [True, True]  # both "passed" the check — this is the bug
+    deployed = float(
+        db._conn.execute(
+            "SELECT IFNULL(SUM(amount),0) FROM trades WHERE side='BUY' AND ts >= ?",
+            (ts - 1,),
+        ).fetchone()[0]
+    )
+    assert deployed == pytest.approx(3540.0)
+    assert deployed > 2000.0  # confirmed: overspent the ₹2000 cap
+
+
+def test_guarded_concurrent_deploys_respect_cap(db):
+    """GREEN: the fix — same race, but check+record serialized under one lock."""
+    os.environ["BUDGET_ROLLOVER_MODE"] = "strict"
+    os.environ["DAILY_INVESTMENT_MAX"] = "2000"
+    ts = int(time.time())
+    lock = asyncio.Lock()
+
+    async def run():
+        results = await asyncio.gather(
+            _guarded_deploy(db, lock, ts, "PPAP", 1770.0),
+            _guarded_deploy(db, lock, ts, "PPAP", 1770.0),
+        )
+        return results
+
+    results = asyncio.run(run())
+    assert sorted(results) == [False, True]  # only one of the two can fit under the cap
+    deployed = float(
+        db._conn.execute(
+            "SELECT IFNULL(SUM(amount),0) FROM trades WHERE side='BUY' AND ts >= ?",
+            (ts - 1,),
+        ).fetchone()[0]
+    )
+    assert deployed == pytest.approx(1770.0)
+    assert deployed <= 2000.0  # cap respected
