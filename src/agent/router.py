@@ -38,10 +38,13 @@ class AgentRouter:
         self._weights[strategy_id] = max(0.0, w)
 
     def _adjust_confidence(self, signal: Signal) -> float:
-        """OBI + corporate profit cues → fused confidence."""
+        """Calibrated base confidence (real outcomes, not the strategy's own hand-picked
+        number) + OBI + corporate profit cues → fused confidence."""
+        from .confidence_calibration import calibrate_confidence
+
         sym = signal.symbol.replace("NSE:", "")
         obi = float(self.ctx.orderbook_imbalance.get(sym, 0) or 0)
-        conf = signal.confidence
+        conf = calibrate_confidence(self.db, signal.strategy_id, signal.confidence)
         if signal.action == "BUY":
             conf *= 1.0 + max(-0.1, min(0.1, obi * 0.12))
         elif signal.action == "SELL":
