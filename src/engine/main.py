@@ -302,7 +302,7 @@ async def main() -> None:
         await pos_mon.on_tick(event)
 
     async def on_order_fill_event(event: MarketEvent) -> None:
-        await on_order_fill(db, event)
+        await on_order_fill(db, event, ctx=execution.router.ctx)
 
     async def on_session_close(event: MarketEvent) -> None:
         await bars.flush_all()

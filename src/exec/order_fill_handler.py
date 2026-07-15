@@ -12,7 +12,24 @@ from ..costs.cost_engine import CostEngine
 logger = logging.getLogger("bharatquant.order_fill")
 
 
-async def on_order_fill(db: DB, event: MarketEvent) -> None:
+def _refresh_ctx_positions(db: DB, ctx) -> None:
+    """Live fills settle here, outside execution_engine's own trade path — without
+    this, ctx.positions (read by stop_loss_guard, affordable_momentum,
+    iv_premium_sell, signal_combiner, router) goes stale after the very first
+    live fill and stays stale until the process restarts. Same bug class
+    independently reported by another builder: agent sat idle for hours
+    thinking it was maxed out because it never saw that positions had closed."""
+    if ctx is None:
+        return
+    try:
+        from ..accounting.fifo_lots import load_positions_ctx
+
+        ctx.positions = load_positions_ctx(db)
+    except Exception:
+        logger.exception("ctx_positions_refresh_failed")
+
+
+async def on_order_fill(db: DB, event: MarketEvent, ctx=None) -> None:
     p = event.payload or {}
     order_id = str(p.get("order_id", ""))
     if not order_id:
@@ -27,6 +44,7 @@ async def on_order_fill(db: DB, event: MarketEvent) -> None:
     costs = CostEngine(slippage_bps=int(__import__("os").getenv("SLIPPAGE_BPS", "4")))
     if settle_pending_fill(db, order_id=order_id, fill_price=fill_px, qty=qty, costs=costs):
         logger.info("pending_fill_settled", extra={"order_id": order_id, "price": fill_px})
+        _refresh_ctx_positions(db, ctx)
         return
 
     row = db._conn.execute(
@@ -44,6 +62,7 @@ async def on_order_fill(db: DB, event: MarketEvent) -> None:
                 (fill_px, fill_px, sym),
             )
         logger.info("order_fill_reconciled", extra={"order_id": order_id, "price": fill_px})
+        _refresh_ctx_positions(db, ctx)
     else:
         side = str(p.get("side", "BUY")).upper()
         fees = float(p.get("fees", 0))

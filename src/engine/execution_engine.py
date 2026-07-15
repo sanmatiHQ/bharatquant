@@ -617,6 +617,13 @@ class ExecutionEngine:
                             source=os.getenv("TRADING_MODE", "paper"),
                         )
                         open_lot(self.db, sym, qty, exec_px, ts, chosen.rail, tid)
+                        # Refresh — not just re-init-once-at-startup. ctx.positions is
+                        # read by stop_loss_guard, affordable_momentum, iv_premium_sell,
+                        # signal_combiner, and router.risk_veto for live decisions; a
+                        # stale copy after a trade is exactly the class of bug reported
+                        # independently by another builder ("agent sat idle 4 hours
+                        # thinking it was maxed out when positions were already closed").
+                        self.router.ctx.positions = load_positions_ctx(self.db)
                         from ..ops.execution_cooldown import mark_order_placed
 
                         mark_order_placed(self.db)
@@ -675,6 +682,7 @@ class ExecutionEngine:
                     )
                     self.db.add_cash(ts, proceeds, f"sell:{sym}")
                     self._update_strategy_pnl(chosen.strategy_id, realized_pnl)
+                    self.router.ctx.positions = load_positions_ctx(self.db)
                     from ..ops.symbol_session_cooldown import record_losing_close
                     from ..ops.loss_ledger import record_closed_loss
                     from ..ops.slippage_parity import record_slippage_pair
