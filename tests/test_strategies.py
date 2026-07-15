@@ -49,7 +49,7 @@ async def test_stop_loss_guard():
 def test_registry_loads_all():
     reg = StrategyRegistry()
     assert len(reg._strategies) == strategy_count()
-    assert strategy_count() == 62
+    assert strategy_count() == 65
 
 
 @pytest.mark.asyncio
@@ -272,3 +272,19 @@ async def test_turtle_breakout_with_donchian():
         ctx,
     )
     assert sig and sig.action == "BUY"
+
+
+def test_every_builtin_strategy_is_enabled_in_config():
+    """Regression guard: a strategy registered in _BUILTIN but missing from
+    config.yaml's strategies.enabled is dead code on the live system — it never
+    dispatches, never accumulates shadow history, never earns lifecycle promotion.
+    This caught 13 real strategies silently excluded this way; don't let it happen again."""
+    import yaml
+
+    from src.strategies.registry import _BUILTIN
+
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    enabled = set(cfg["strategies"]["enabled"])
+    missing = sorted(set(_BUILTIN.keys()) - enabled)
+    assert not missing, f"registered but not enabled in config.yaml (dead on live system): {missing}"

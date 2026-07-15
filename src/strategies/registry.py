@@ -53,11 +53,14 @@ from .literature_strategies import (
 from .candidacy_signals import (
     AsmGsmEntryStrategy,
     CircuitBandFlowStrategy,
+    DeliveryConvictionStrategy,
     FoBanUnwindStrategy,
     GiftBasisConvergenceStrategy,
     IndexReconstitutionStrategy,
+    LowVolatilityAnomalyStrategy,
     PeadContinuationStrategy,
     PromoterPledgeSignalStrategy,
+    Proximity52WHighStrategy,
     RegulatoryCatalystStrategy,
     RetailContrarianFadeStrategy,
     SipFlowSeasonalityStrategy,
@@ -140,6 +143,9 @@ _BUILTIN: dict[str, Type[Strategy]] = {
     "pead_continuation": PeadContinuationStrategy,
     "circuit_band_flow": CircuitBandFlowStrategy,
     "regulatory_catalyst": RegulatoryCatalystStrategy,
+    "proximity_52w_high": Proximity52WHighStrategy,
+    "low_vol_anomaly": LowVolatilityAnomalyStrategy,
+    "delivery_conviction": DeliveryConvictionStrategy,
 }
 
 
@@ -167,6 +173,9 @@ class StrategyRegistry:
                 "pairs_stat_arb",
                 "affordable_momentum",
                 "asm_gsm_entry",
+                "proximity_52w_high",
+                "low_vol_anomaly",
+                "delivery_conviction",
             ):
                 self._strategies.append(cls(db=db))
             else:

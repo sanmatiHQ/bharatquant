@@ -89,6 +89,19 @@ strategies:
     - monday_effect_in
     - calendar_activity
     - sentiment_regime
+    - index_reconstitution
+    - asm_gsm_entry
+    - fo_ban_unwind
+    - promoter_pledge_signal
+    - sip_flow_seasonality
+    - gift_basis_convergence
+    - retail_contrarian_fade
+    - pead_continuation
+    - circuit_band_flow
+    - regulatory_catalyst
+    - proximity_52w_high
+    - low_vol_anomaly
+    - delivery_conviction
 
 rl:
   active_version: "ppo_v1"

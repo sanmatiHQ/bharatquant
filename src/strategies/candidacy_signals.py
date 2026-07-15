@@ -182,3 +182,111 @@ class RegulatoryCatalystStrategy:
             return None
         sym = _sym(event) or "NIFTYBEES"
         return Signal(self.id, sym, "BUY", "CNC", 0.56, "regulatory_catalyst_window")
+
+
+class Proximity52WHighStrategy:
+    """George & Hwang (2004) 52-week-high momentum — distinct from generic price momentum:
+    proximity to the 52-week high itself (not trailing return) is the documented anomaly."""
+
+    id = "proximity_52w_high"
+    listens_to = {EventType.BAR_CLOSE_1D}
+
+    def __init__(self, db=None) -> None:
+        self.db = db
+
+    async def on_event(self, event: MarketEvent, ctx: MarketContext) -> Optional[Signal]:
+        if not self.db:
+            return None
+        sym = _sym(event)
+        if not sym:
+            return None
+        rows = self.db._conn.execute(
+            "SELECT close FROM bar_log WHERE symbol=? AND interval='1d' ORDER BY ts DESC LIMIT 252",
+            (sym,),
+        ).fetchall()
+        if len(rows) < 60:
+            return None
+        closes = [float(r["close"]) for r in rows]
+        last = closes[0]
+        hi_52w = max(closes)
+        if hi_52w <= 0:
+            return None
+        ratio = last / hi_52w
+        if ratio < 0.95:
+            return None
+        confidence = min(0.72, 0.5 + (ratio - 0.95) * 4.0)
+        return Signal(self.id, sym, "BUY", "CNC", round(confidence, 3), f"proximity_52w_high_{ratio:.3f}")
+
+
+class LowVolatilityAnomalyStrategy:
+    """Ang, Hodrick, Xing & Zhang (2006) low-volatility anomaly — low realized-vol names
+    show better risk-adjusted returns than the market rewards them for; avoids dead laggards
+    by requiring non-negative trailing momentum alongside the low-vol filter."""
+
+    id = "low_vol_anomaly"
+    listens_to = {EventType.BAR_CLOSE_1D}
+
+    def __init__(self, db=None) -> None:
+        self.db = db
+
+    async def on_event(self, event: MarketEvent, ctx: MarketContext) -> Optional[Signal]:
+        if not self.db:
+            return None
+        sym = _sym(event)
+        if not sym:
+            return None
+        rows = self.db._conn.execute(
+            "SELECT close FROM bar_log WHERE symbol=? AND interval='1d' ORDER BY ts DESC LIMIT 21",
+            (sym,),
+        ).fetchall()
+        if len(rows) < 21:
+            return None
+        closes = [float(r["close"]) for r in reversed(rows)]
+        rets = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes)) if closes[i - 1] > 0]
+        if len(rets) < 15:
+            return None
+        mean_r = sum(rets) / len(rets)
+        var = sum((r - mean_r) ** 2 for r in rets) / len(rets)
+        ann_vol = (var ** 0.5) * (252 ** 0.5)
+        mom_20d = (closes[-1] - closes[0]) / closes[0] if closes[0] > 0 else 0.0
+        if ann_vol >= 0.20 or mom_20d < 0:
+            return None
+        confidence = min(0.68, 0.55 + (0.20 - ann_vol))
+        return Signal(self.id, sym, "BUY", "CNC", round(confidence, 3), f"low_vol_anomaly_{ann_vol:.3f}")
+
+
+class DeliveryConvictionStrategy:
+    """India-specific: NSE delivery % distinguishes genuine accumulation from intraday churn.
+    High delivery % on an up day signals real (not speculative/leveraged) buying interest —
+    the same underlying data institutional NSE desks watch, rarely modeled at retail scale."""
+
+    id = "delivery_conviction"
+    listens_to = {EventType.VOLUME_ANOMALY}
+
+    def __init__(self, db=None) -> None:
+        self.db = db
+
+    async def on_event(self, event: MarketEvent, ctx: MarketContext) -> Optional[Signal]:
+        if not self.db:
+            return None
+        sym = _sym(event)
+        if not sym:
+            return None
+        dp = event.payload.get("delivery_pct")
+        if dp is None:
+            return None
+        dp = float(dp)
+        if dp < 65.0:
+            return None
+        rows = self.db._conn.execute(
+            "SELECT close FROM bar_log WHERE symbol=? AND interval='1d' ORDER BY ts DESC LIMIT 2",
+            (sym,),
+        ).fetchall()
+        if len(rows) < 2:
+            return None
+        last, prev = float(rows[0]["close"]), float(rows[1]["close"])
+        if prev <= 0 or last <= prev:
+            return None
+        chg = (last - prev) / prev
+        confidence = min(0.7, 0.55 + (dp - 65.0) / 100.0 + min(0.05, chg))
+        return Signal(self.id, sym, "BUY", "CNC", round(confidence, 3), f"delivery_conviction_{dp:.0f}pct")
